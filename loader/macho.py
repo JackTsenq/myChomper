@@ -1,0 +1,351 @@
+import os
+from typing import Dict, List, Tuple, Optional
+
+import lief
+from lief.MachO import ARM64_RELOCATION, RelocationFixup
+
+from chomper.utils import aligned
+
+from .base import BaseLoader, Module, Symbol, Binding
+import traceback
+
+class MachoLoader(BaseLoader):
+    """The Mach-O file loader."""
+
+    def _map_segments(self, binary: lief.MachO.Binary, module_base: int) -> int:
+        """Map all segments into memory."""
+        # mapped: List[Tuple[int, int]] = []
+        boundary = 0
+
+        for segment in binary.segments:
+            if not segment.virtual_size or segment.name == "__PAGEZERO":
+                continue
+
+            seg_addr = module_base + segment.virtual_address
+
+            # map_addr = aligned(seg_addr, 1024) - (1024 if seg_addr % 1024 else 0)
+            # map_size = aligned(seg_addr - map_addr + segment.virtual_size, 1024)
+
+            map_addr = seg_addr
+            map_size = segment.virtual_size
+
+            # map_parts = []
+
+            # for mapped_start, mapped_end in mapped:
+            #     overlap_start = max(map_addr, mapped_start)
+            #     overlap_end = min(map_addr + map_size, mapped_end)
+
+            #     if overlap_start < overlap_end:
+            #         if map_addr < overlap_start:
+            #             map_parts.append((map_addr, overlap_end - map_addr))
+            #         if map_addr + map_size > overlap_end:
+            #             map_parts.append(
+            #                 (overlap_end, map_addr + map_size - overlap_end)
+            #             )
+            #         map_addr = -1
+            #         break
+
+            # if map_addr > 0:
+            #     print(f"seg_addr: 0x{seg_addr:x} segment.virtual_size: {segment.virtual_size:x} map_addr: 0x{map_addr:x} map_size: 0x{map_size:x}")
+            #     self.emu.uc.mem_map(map_addr, map_size)
+
+            # for map_addr, map_size in map_parts:
+            #     self.emu.uc.mem_map(map_addr, map_size)
+
+            # print(f"_map_segments seg_addr 0x{seg_addr:x} segment.content {segment.content}")
+            # self.emu.uc.mem_write(
+            #     seg_addr,
+            #     bytes(segment.content),
+            # )
+
+            # mapped.append((map_addr, map_addr + map_size))
+            boundary = max(boundary, map_addr + map_size)
+
+        return boundary - module_base
+
+    def _map_segments_mem(self, binary: lief.MachO.Binary, module_base: int) -> int:
+        """Map all segments into memory."""
+        mapped: List[Tuple[int, int]] = []
+        boundary = 0
+
+        for segment in binary.segments:
+            if not segment.virtual_size or segment.name == "__PAGEZERO":
+                continue
+
+            seg_addr = module_base + segment.virtual_address
+
+            map_addr = aligned(seg_addr, 1024) - (1024 if seg_addr % 1024 else 0)
+            map_size = aligned(seg_addr - map_addr + segment.virtual_size, 1024)
+
+            # map_addr = seg_addr
+            # map_size = segment.virtual_size
+
+            map_parts = []
+
+            for mapped_start, mapped_end in mapped:
+                overlap_start = max(map_addr, mapped_start)
+                overlap_end = min(map_addr + map_size, mapped_end)
+
+                if overlap_start < overlap_end:
+                    if map_addr < overlap_start:
+                        map_parts.append((map_addr, overlap_end - map_addr))
+                    if map_addr + map_size > overlap_end:
+                        map_parts.append(
+                            (overlap_end, map_addr + map_size - overlap_end)
+                        )
+                    map_addr = -1
+                    break
+
+            if map_addr > 0:
+                # print(f"seg_addr: 0x{seg_addr:x} segment.virtual_size: {segment.virtual_size:x} map_addr: 0x{map_addr:x} map_size: 0x{map_size:x}")
+                self.emu.uc.mem_map(map_addr, map_size)
+
+            for map_addr, map_size in map_parts:
+                self.emu.uc.mem_map(map_addr, map_size)
+
+            # print(f"_map_segments seg_addr 0x{seg_addr:x} segment.content {segment.content}")
+            self.emu.uc.mem_write(
+                seg_addr,
+                bytes(segment.content),
+            )
+
+            mapped.append((map_addr, map_addr + map_size))
+            boundary = max(boundary, map_addr + map_size)
+
+        return boundary - module_base
+
+    @staticmethod
+    def _get_binding_name(symbol_name: str) -> str:
+        if symbol_name == "____chkstk_darwin":
+            return symbol_name.replace("_", "", 1)
+
+        return symbol_name.replace("$VARIANT$armv81", "")
+
+    def _load_symbols(
+        self,
+        binary: lief.MachO.Binary,
+        module_base: int,
+    ) -> List[Symbol]:
+        """Get all symbols in the module."""
+        symbols = []
+
+        lazy_bindings = self.get_lazy_bindings()
+        lazy_binding_set = set()
+
+        for symbol in binary.symbols:
+            if symbol.value and (symbol.value > 0x100000000):
+                symbol_name = str(symbol.name)
+                symbol_address = module_base + symbol.value
+
+                binding_name = self._get_binding_name(symbol_name)
+
+                # Lazy bind
+                if lazy_bindings.get(binding_name):
+                    # Avoid duplicate bind for special case like xx$VARIANT$armv81
+                    if binding_name in lazy_binding_set and binding_name == symbol_name:
+                        continue
+
+                    for module, binding in lazy_bindings[binding_name]:
+                        reloc_addr = symbol_address
+
+                        if reloc_addr:
+                            addr = module.base - module.image_base + binding.address
+
+                            value = reloc_addr + binding.addend
+                            value &= 0xFFFFFFFFFFFFFFFF
+
+                            self.emu.write_pointer(addr, value)
+
+                    lazy_binding_set.add(binding_name)
+
+                symbol_struct = Symbol(
+                    address=symbol_address,
+                    name=symbol_name,
+                )
+                symbols.append(symbol_struct)
+
+                if binding_name != symbol_name:
+                    symbol_struct = Symbol(
+                        address=symbol_address,
+                        name=binding_name,
+                    )
+                    symbols.append(symbol_struct)
+        return symbols
+
+    def _get_symbol_reloc_addr(
+        self,
+        symbol_map: Dict[str, Symbol],
+        symbol_name: str,
+    ) -> Optional[int]:
+        """Get the relocation address of a symbol."""
+        reloc_addr = None
+
+        if symbol_map.get(f"{symbol_name}$VARIANT$armv81"):
+            if not self.emu.hooks.get(symbol_name):
+                reloc_addr = symbol_map[f"{symbol_name}$VARIANT$armv81"].address
+        elif symbol_name == "___chkstk_darwin":
+            if symbol_map.get(f"_{symbol_name}"):
+                reloc_addr = symbol_map[f"_{symbol_name}"].address
+        elif symbol_map.get(symbol_name):
+            reloc_addr = symbol_map[symbol_name].address
+        elif symbol_map.get(f"__platform{symbol_name}"):
+            reloc_addr = symbol_map[f"__platform{symbol_name}"].address
+
+        return reloc_addr
+
+    def _process_symbol_relocation(
+        self,
+        binary: lief.MachO.Binary,
+        module_base: int,
+        symbols: List[Symbol],
+    ) -> List[Binding]:
+        """Process relocations for symbols."""
+        symbol_map = self.get_symbols()
+        symbol_map.update({symbol.name: symbol for symbol in symbols})
+
+        hooks_map: Dict = {}
+        lazy_bindings = []
+
+        for binding in binary.bindings:
+            if binding.segment.name in ("__TEXT",):
+                continue
+
+            symbol = binding.symbol
+            symbol_name = str(symbol.name)
+
+            reloc_addr = self._get_symbol_reloc_addr(symbol_map, symbol_name)
+
+            if not reloc_addr:
+                lazy_binding = Binding(
+                    symbol=symbol_name,
+                    address=binding.address,
+                    addend=binding.addend,
+                )
+                lazy_bindings.append(lazy_binding)
+
+                # Hook imports
+                if self.emu.hooks.get(symbol_name):
+                    if not hooks_map.get(symbol_name):
+                        reloc_addr = self.emu.create_buffer(self.emu.arch.addr_size)
+                        hooks_map[symbol_name] = reloc_addr
+
+                        self.emu.add_interceptor(
+                            reloc_addr, self.emu.hooks[symbol_name]
+                        )
+                    else:
+                        reloc_addr = hooks_map[symbol_name]
+
+                    self.emu.logger.info(
+                        f'Hook import symbol "{symbol_name}" at {hex(binding.address)}'
+                    )
+                else:
+                    # self.emu.add_hook(
+                    #     reloc_addr,
+                    #     self._missing_symbol_required_callback,
+                    #     user_data={"symbol_name": symbol.name},
+                    # )
+                    continue
+
+            if reloc_addr:
+                value = (reloc_addr + binding.addend) & 0xFFFFFFFFFFFFFFFF
+                self.emu.write_pointer(module_base + binding.address, value)
+
+        return lazy_bindings
+
+    def _process_relocation(
+        self,
+        binary: lief.MachO.Binary,
+        module_base: int,
+        symbols: List[Symbol],
+    ):
+        """Process relocations base on relocation table and symbol references."""
+        blocks: List[Tuple[int, int]] = []
+
+        begin = None
+        end = None
+
+        # Merge relocation records into blocks
+        for segment in binary.segments:
+            for relocation in segment.relocations:
+                if relocation.type == ARM64_RELOCATION.SUBTRACTOR:
+                    address = module_base + relocation.address
+
+                    if not begin:
+                        begin = address
+
+                    if end and address != end:
+                        blocks.append((begin, end))
+                        begin = address
+
+                    end = address + self.emu.arch.addr_size
+                elif isinstance(relocation, RelocationFixup):
+                    self.emu.write_pointer(
+                        module_base + relocation.address,
+                        module_base + relocation.target,
+                    )
+
+        if begin and end:
+            blocks.append((begin, end))
+
+        # Read and write as blocks
+        for begin, end in blocks:
+            # print(f"_process_relocation begin: 0x{begin:x}")
+            values = self.emu.read_array(begin, end)
+            values = map(lambda v: module_base + v, values)
+
+            self.emu.write_array(begin, values)
+
+        return self._process_symbol_relocation(binary, module_base, symbols)
+
+    def _get_init_array(self, binary: lief.MachO.Binary, module_base: int):
+        """Get initialization functions in section `__mod_init_func`."""
+        section = binary.get_section("__mod_init_func")
+        if not section:
+            return []
+
+        begin = module_base + section.virtual_address
+        end = begin + section.size
+        values = self.emu.read_array(begin, end)
+
+        return [addr for addr in values if addr]
+
+    def load(
+        self,
+        module_base: int,
+        module_file: str,
+        trace_symbol_calls: bool = False,
+        map_mem: bool = False,
+    ) -> Module:
+        """Load Mach-O executable file from path."""
+        module_name = os.path.basename(module_file)
+        # self.emu.logger.info(f'Load module "{module_name}" module_base: 0x{module_base:x} stack: {traceback.extract_stack()}')
+        self.emu.logger.info(f'Load module "{module_name}" module_base: 0x{module_base:x}')
+
+        binary: lief.MachO.Binary = lief.parse(module_file)  # type: ignore
+
+        segment_addresses = [t.virtual_address for t in binary.segments]
+
+        # Make module memory distribution more compact
+        module_base -= aligned(min(segment_addresses), 1024)
+        image_base = binary.imagebase
+        if map_mem:
+            size = self._map_segments_mem(binary, module_base)
+        else:
+            size = self._map_segments(binary, module_base)
+        symbols = self._load_symbols(binary, module_base)
+
+        self.add_symbol_hooks(symbols, trace_symbol_calls)
+
+        lazy_bindings = self._process_relocation(binary, module_base, symbols)
+        init_array = self._get_init_array(binary, module_base)
+
+        return Module(
+            base=module_base + image_base,
+            size=size - image_base,
+            name=module_name,
+            symbols=symbols,
+            init_array=init_array,
+            image_base=image_base,
+            lazy_bindings=lazy_bindings,
+            binary=binary,
+        )
