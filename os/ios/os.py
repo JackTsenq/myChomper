@@ -78,7 +78,7 @@ OBJC_DEPENDENCIES = [
     "CFNetwork",
     "Foundation",
     "Security",
-    "PN548_API.dylib",
+    "libcompression.dylib", #taobao
 ]
 
 # Dependent libraries of UIKit
@@ -95,6 +95,10 @@ UI_KIT_DEPENDENCIES = [
     "UIKitServices",
     "UIKitCore",
     "SystemConfiguration",
+]
+
+ONLY_MAP = [
+    "PN548_API.dylib",
     "MediaToolbox",
     "WebBookmarks",
     "PhotoFoundation",
@@ -108,8 +112,22 @@ UI_KIT_DEPENDENCIES = [
     "IOSurface",
     "CoreUI",
     "Combine",
-    "TSUtility",
+    "iWorkXPC_TSUtility",
     "WebCore",
+    "iWorkImport_TSUtility",
+    "libimg4.dylib",
+    "libEDR",
+    "CoreText",
+    "CoreServices",
+    "MobileAsset",
+    "WebKitLegacy",
+    "Pasteboard",
+    "ShareSheet",
+    "UserNotifications",
+    "libWirelessAudioIPC.dylib",
+    "libAppleArchive.dylib", #taobao
+    "CoreParsec", #taobao
+    "AssetsLibraryServices", #taobao
 ]
 
 # Define symbolic links in the file system
@@ -640,6 +658,10 @@ class IosOs(BaseOs):
         print(f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x}")
         print(f"[x1] {self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')),8)}")
 
+    def hook_mem_read_unmapped_180470014(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x2 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+
     def resolve_modules(self, module_names: List[str]):
         """Load system modules if don't loaded."""
         fixup = SystemModuleFixup(self.emu)
@@ -744,7 +766,9 @@ class IosOs(BaseOs):
         # self.emu.add_hook(0x193E1BD88, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E1BD84, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193e28998, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2899C, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E289A4, self.hook_mem_read_unmapped)
+  
         # self.emu.add_hook(0x193E28A2C, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E28A40, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E289DC, self.hook_mem_read_unmapped)
@@ -754,23 +778,138 @@ class IosOs(BaseOs):
         # self.emu.add_hook(0x193E28A54, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E28AFC, self.hook_mem_read_unmapped)
 
-        self.emu.add_hook(0x193E2739C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2739C, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E2E804, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x193E20708, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x1AB498898, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988B0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988B8, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988D4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988E0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C40636C0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C40636B8, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x1AB4988AC, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x1AB4988D0, self.hook_mem_read_unmapped)
         # self.emu.add_hook(0x1AB4988E0, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E27144, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27144, self.hook_mem_read_unmapped)
 
-        self.emu.add_hook(0x193E2717C, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E27154, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E27164, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E271A0, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E271C4, self.hook_mem_read_unmapped)
-        self.emu.add_hook(0x193E272A4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2717C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27154, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27164, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E271A0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E271C4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E272A4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AE592C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988A0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988A4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4988AC, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF8398, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB47D7C0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB47D788, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB47D660, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB47D75C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA1A0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA1D0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA1E4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA204, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA220, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803DA2D8, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803F0E50, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803F0E70, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1803F1084, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725ED0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725EDC, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725EE8, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725EF4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F00, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F0C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F18, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F10, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F2C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F38, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F44, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F50, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F5C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181725F68, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x181824D20, self.hook_mem_read_unmapped)
 
+        # self.emu.add_hook(0x1C6AF8384, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF8398, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF83A4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF83B0, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF83BC, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF83C8, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1C6AF83D4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB48EDF8, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB48EEB8, self.hook_mem_read_unmapped)
 
+        # self.emu.add_hook(0x193E27140, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2715C, self.hook_mem_read_unmapped)
+       
+        # self.emu.add_hook(0x193E2714C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27158, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27164, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27170, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2717C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27188, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E27194, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB47377C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB473784, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB473788, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4737B4, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x1AB4737B8, self.hook_mem_read_unmapped)
+        
+        # self.emu.add_hook(0x193E27EAC, self.hook_mem_read_unmapped) #_load_images start
+        # self.emu.add_hook(0x193E28520, self.hook_mem_read_unmapped) #_load_images end 1
+        # self.emu.add_hook(0x193E28500, self.hook_mem_read_unmapped) #_load_images end
+        # self.emu.add_hook(0x193E27F1C, self.hook_mem_read_unmapped) #_load_images ime 1
+
+        # self.emu.add_hook(0x193E27F34, self.hook_mem_read_unmapped) #_load_images ime 2
+        # self.emu.add_hook(0x193E27F04, self.hook_mem_read_unmapped) #_load_images ime 3
+        # self.emu.add_hook(0x193E27F94, self.hook_mem_read_unmapped) #_load_images ime 4
+        # self.emu.add_hook(0x193E27FB4, self.hook_mem_read_unmapped) #_load_images ime 5
+        # self.emu.add_hook(0x193E27FCC, self.hook_mem_read_unmapped) #_load_images ime 6
+        # self.emu.add_hook(0x193E27FE4, self.hook_mem_read_unmapped) #_load_images ime 7
+        # self.emu.add_hook(0x193E28020, self.hook_mem_read_unmapped) #_load_images ime 8
+        # self.emu.add_hook(0x193E28064, self.hook_mem_read_unmapped) #_load_images ime 9
+        # self.emu.add_hook(0x193E2808C, self.hook_mem_read_unmapped) #_load_images ime 10
+        # self.emu.add_hook(0x193E280A4, self.hook_mem_read_unmapped) #_load_images ime 11
+        # self.emu.add_hook(0x193E280B8, self.hook_mem_read_unmapped) #_load_images ime 12
+        # self.emu.add_hook(0x193E280C0, self.hook_mem_read_unmapped) #_load_images ime 13
+        # self.emu.add_hook(0x193E280D0, self.hook_mem_read_unmapped) #_load_images ime 14
+        # self.emu.add_hook(0x193E28194, self.hook_mem_read_unmapped) #_load_images ime 15
+        # self.emu.add_hook(0x193E281C0, self.hook_mem_read_unmapped) #_load_images ime 16
+        # self.emu.add_hook(0x193E281D4, self.hook_mem_read_unmapped) #_load_images ime 17
+        # self.emu.add_hook(0x193E2822C, self.hook_mem_read_unmapped) #_load_images ime 18
+        # self.emu.add_hook(0x193E282A4, self.hook_mem_read_unmapped) #_load_images ime 19
+        # self.emu.add_hook(0x193E28264, self.hook_mem_read_unmapped) #_load_images ime 20
+        # self.emu.add_hook(0x193E28278, self.hook_mem_read_unmapped) #_load_images ime 21
+        # self.emu.add_hook(0x193E2828C, self.hook_mem_read_unmapped) #_load_images ime 22
+        # self.emu.add_hook(0x193E28298, self.hook_mem_read_unmapped) #_load_images ime 23
+        # self.emu.add_hook(0x193E282B0, self.hook_mem_read_unmapped) #_load_images ime 24
+        # self.emu.add_hook(0x193E282BC, self.hook_mem_read_unmapped) #_load_images ime 25
+        # self.emu.add_hook(0x193E282C8, self.hook_mem_read_unmapped) #_load_images ime 26
+        # self.emu.add_hook(0x193E28258, self.hook_mem_read_unmapped) #_load_images ime 27
+
+        # self.emu.add_hook(0x193E2E48C, self.hook_mem_read_unmapped)
+        # self.emu.add_hook(0x193E2E490, self.hook_mem_read_unmapped) #_load_images ime 28
+        # self.emu.add_hook(0x193E2E494, self.hook_mem_read_unmapped) #_load_images ime 28
+        # self.emu.add_hook(0x193E2E500, self.hook_mem_read_unmapped) #_load_images ime 29
+        # self.emu.add_hook(0x193E2E51C, self.hook_mem_read_unmapped) #_load_images ime 30
+       
+        # self.emu.add_hook(0x18046FF18, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 31
+        # self.emu.add_hook(0x18046FB44, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 32
+        # self.emu.add_hook(0x18046FE20, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 33
+        # self.emu.add_hook(0x18046FB78, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 34
+        # self.emu.add_hook(0x18046FE20, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 35
+        # self.emu.add_hook(0x18046FB90, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 36
+        # self.emu.add_hook(0x18046FBA4, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 37
+        # self.emu.add_hook(0x18046FC38, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 38
+        # self.emu.add_hook(0x18046FD60, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 39
+        # self.emu.add_hook(0x18046FFC8, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 40
+        # self.emu.add_hook(0x180470004, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 41
+        # self.emu.add_hook(0x180470014, self.hook_mem_read_unmapped_180470014) #_load_images  ____forwarding___ 42
+       
 
         for module_name in module_names:
             if self.emu.find_module(module_name):
@@ -969,7 +1108,7 @@ class IosOs(BaseOs):
         self._setup_symbolic_links()
         self._setup_bundle_dir()
 
-        ALL_MODULES = OBJC_DEPENDENCIES + UI_KIT_DEPENDENCIES
+        ALL_MODULES = OBJC_DEPENDENCIES + UI_KIT_DEPENDENCIES + ONLY_MAP
         self.map_all_modules(ALL_MODULES)
 
         # symbol_dataSegmentsRanges = self.emu.find_symbol("_dataSegmentsRanges")

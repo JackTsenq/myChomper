@@ -38,6 +38,13 @@ def hook_pthread_self(uc: Uc, address: int, size: int, user_data: UserData):
 
     return emu.read_pointer(emu.find_symbol("__main_thread_ptr").address)
 
+@register_hook("_pthread_join")
+def hook_pthread_join(uc: Uc, address: int, size: int, user_data: UserData):
+    emu = user_data["emu"]
+    print(f"_pthread_join called x0 {emu.get_arg(0)}")
+
+    return 0
+
 
 @register_hook("_malloc")
 def hook_malloc(uc: Uc, address: int, size: int, user_data: UserData):
@@ -456,9 +463,29 @@ def hook_ns_object_does_not_recognize_selector_for_class(
     selector = emu.read_string(emu.get_arg(2))
 
     class_name = emu.read_string(emu.call_symbol("_class_getName", receiver))
-    raise ObjCUnrecognizedSelector(
-        f"Unrecognized selector '{selector}' of class '{class_name}'"
-    )
+    print(f"Unrecognized selector '{selector}' of class '{class_name}'")
+    # raise ObjCUnrecognizedSelector(
+    #     f"Unrecognized selector '{selector}' of class '{class_name}'"
+    # )
+
+@register_hook("+[TBNavigationController load]")
+def hook_TBNavigationController_load(
+    uc: Uc, address: int, size: int, user_data: UserData
+):
+    print(f"call +[TBNavigationController load]")
+    return 0
+
+@register_hook("+[NSDictionary dictionary]")
+def hook_NSDictionary_dictionary(
+    uc: Uc, address: int, size: int, user_data: UserData
+):
+    print(f"call +[NSDictionary dictionary]")
+
+@register_hook("+[NSMutableDictionary dictionary]")
+def hook_NSMutableDictionary_dictionary(
+    uc: Uc, address: int, size: int, user_data: UserData
+):
+    print(f"call +[NSMutableDictionary dictionary]")
 
 
 @register_hook("-[NSObject(NSObject) doesNotRecognizeSelector:]")

@@ -532,6 +532,7 @@ class Chomper:
             syscall_handler = self.syscall_handlers.get(syscall_no)
 
             if syscall_handler:
+                # print(f"syscall_handler: {syscall_handler} syscall_no: 0x{syscall_no:x}")
                 result = syscall_handler(self)
                 if result is not None:
                     self.set_retval(result)
@@ -569,41 +570,63 @@ class Chomper:
                 )
 
     def find_arm64_slice_in_fat(self, file_path:str):
-        """从Fat文件中找到arm64架构的切片偏移量"""
+        """从Fat文件中找到arm64架构的切片偏移量，或者处理非fat格式的Mach-O arm64文件"""
         try:
             with open(file_path, 'rb') as f:
-                # 读取Fat Magic判断是否为Fat文件
+                # 读取Magic判断文件类型
                 magic = struct.unpack('I', f.read(4))[0]
-                if magic not in (FAT_MAGIC, FAT_CIGAM):
-                    return None  # 不是Fat文件
+                
+                # 如果是Fat文件
+                if magic in (FAT_MAGIC, FAT_CIGAM):
+                    # 确定字节序
+                    endian = '<' if magic == FAT_MAGIC else '>'
 
-                # 确定字节序
-                endian = '<' if magic == FAT_MAGIC else '>'
+                    # 读取Fat Header: magic(4), nfat_arch(4)
+                    f.seek(0)
+                    fat_header = struct.unpack(f'{endian}II', f.read(8))
+                    nfat_arch = fat_header[1]  # 架构数量
 
-                # 读取Fat Header: magic(4), nfat_arch(4)
-                f.seek(0)
-                fat_header = struct.unpack(f'{endian}II', f.read(8))
-                nfat_arch = fat_header[1]  # 架构数量
+                    # 遍历每个架构切片
+                    for _ in range(nfat_arch):
+                        # 读取fat_arch结构
+                        arch_format = f'{endian}IIIII'
+                        arch_info = struct.unpack(arch_format, f.read(20))
+                        cputype, _, offset, _, _ = arch_info
 
-                # 遍历每个架构切片
-                for _ in range(nfat_arch):
-                    # 读取fat_arch结构
-                    arch_format = f'{endian}IIIII'
-                    arch_info = struct.unpack(arch_format, f.read(20))
-                    cputype, _, offset, _, _ = arch_info
+                        # 检查是否为arm64架构
+                        if cputype == CPU_TYPE_ARM64:
+                            return offset  # 返回该切片在文件中的偏移量
 
+                    # 未找到arm64切片
+                    return None
+                
+                # 如果是Mach-O 64-bit文件
+                elif magic in (MH_MAGIC_64, MH_CIGAM_64):
+                    # 确定字节序
+                    endian = '<' if magic == MH_MAGIC_64 else '>'
+                    
+                    # 读取mach_header_64的cputype字段
+                    f.seek(4)  # 跳过magic，定位到cputype
+                    cputype = struct.unpack(f'{endian}i', f.read(4))[0]
+                    
                     # 检查是否为arm64架构
                     if cputype == CPU_TYPE_ARM64:
-                        return offset  # 返回该切片在文件中的偏移量
+                        return 0  # 非fat格式的arm64文件，从文件开始处读取
+                    else:
+                        return None  # 不是arm64架构
+                
+                else:
+                    return None  # 既不是Fat文件也不是Mach-O 64-bit文件
 
-            # 未找到arm64切片
-            return None
         except Exception as e:
-            print(f"处理Fat文件 {file_path} 时出错: {e}")
+            print(f"处理文件 {file_path} 时出错: {e}")
             return None
 
     def get_all_segments_64_info(self, file_path:str, slice_offset:int = None):
-        """获取所有LC_SEGMENT_64的segname、fileoff和filesize"""
+        # 非Fat文件，直接返回0
+        if slice_offset == 0:
+            return 0
+        """获取所有LC_SEGMENT_64的vm address，返回最小的vm address作为macho起始地址"""
         try:
             with open(file_path, 'rb') as f:
                 # 定位到正确的位置(文件开始或Fat切片开始)
@@ -634,7 +657,7 @@ class Chomper:
                 # 移动到load commands开始位置
                 f.seek(load_commands_start)
 
-                segments = {}
+                min_vm_addr = None
                 current_position = load_commands_start
 
                 # 遍历所有load commands，增加边界检查
@@ -668,17 +691,33 @@ class Chomper:
                             # 提取段名称（去除末尾的空字符）
                             segname = seg_data[2].decode('utf-8').strip('\x00')
                             vm_addr = seg_data[3]  # vm addr
-                            vm_size = seg_data[4]  # vm seize
+                            vm_size = seg_data[4]  # vm size
 
-                            return vm_addr
+                            print(f"Found segment '{segname}' with vm_addr: 0x{vm_addr:x}, vm_size: 0x{vm_size:x}")
+                            
+                            # 排除__PAGEZERO段，更新最小的vm address
+                            if segname != "__PAGEZERO" and (min_vm_addr is None or vm_addr < min_vm_addr):
+                                min_vm_addr = vm_addr
 
                     # 移动到下一个命令
                     current_position += cmdsize
                     f.seek(current_position)
 
+                # 返回找到的最小vm address
+                if min_vm_addr is not None:
+                    print(f"Minimum vm address found: 0x{min_vm_addr:x}")
+                    return min_vm_addr
+                else:
+                    print("No LC_SEGMENT_64 commands found")
+                    return None
+
         except Exception as e:
             print(f"解析文件 {file_path} 时出错: {e}")
             return None
+
+    def hook_mem_read_unmapped(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
 
     def load_module(
         self,
@@ -705,9 +744,13 @@ class Chomper:
             self.os.set_main_executable(module_file)
 
         slice_offset = self.find_arm64_slice_in_fat(module_file)
+        print(f"load_module slice_offset: 0x{slice_offset:x}")
         module_base = self.get_all_segments_64_info(module_file, slice_offset)
+        print(f"load_module 1 module_base: 0x{module_base:x}")
         if not module_base:
-            module_base = const.MODULE_ADDRESS
+            # module_base = const.MODULE_ADDRESS
+            module_base = 0
+            # print(f"load_module 2 module_base: 0x{module_base:x}")
         # if not self.modules:clea
         #     module_base = const.MODULE_ADDRESS
         # else:
@@ -722,12 +765,33 @@ class Chomper:
         )
 
         self.modules.append(module)
+        
+        if module_file.endswith("/Taobao4iPhone"):
+            self.os.emu.add_hook(0x1003E8CAC, self.hook_mem_read_unmapped) # +[LTCDecompressor_MainImage load] end
+            # self.os.emu.add_hook(0x193E28520, self.hook_mem_read_unmapped) #_load_images end
+            # self.os.emu.add_hook(0x193E27EAC, self.hook_mem_read_unmapped) #_load_images start
+            self.os.emu.add_hook(0x193E2EF74, self.hook_mem_read_unmapped) #_class_getName start
+            self.os.emu.add_hook(0x193E2E700, self.hook_mem_read_unmapped)
+            self.os.emu.add_hook(0x193E2E480, self.hook_mem_read_unmapped)
+            self.os.emu.add_hook(0x193E2E498, self.hook_mem_read_unmapped)
 
+           
+            # self.os.emu.add_hook(0x193E27F4C, self.hook_mem_read_unmapped)
+            # self.os.emu.add_hook(0x193E27F64, self.hook_mem_read_unmapped)
+            # self.os.emu.add_hook(0x193E27F7C, self.hook_mem_read_unmapped)
+            # self.os.emu.add_hook(0x193E27F94, self.hook_mem_read_unmapped)
+            # self.os.emu.add_hook(0x193E27FAC, self.hook_mem_read_unmapped)
+            # self.os.emu.add_hook(0x193E27FC4, self.hook_mem_read_unmapped)
+    
+            # print(f"call Taobao4iPhone +[LTCDecompressor_MainImage load] at 0x1003E88B8")
+            # self.os.emu.call_address(0x1003E88B8) #+[LTCDecompressor_MainImage load]
+            
         # Trace instructions
         if trace_inst or self._trace_inst:
             self.add_inst_trace(module)
 
         if exec_objc_init and isinstance(self.os, IosOs):
+            print(f"call init_objc in load_module module: {module.name}")
             self.os.init_objc(module)
 
         if exec_init_array and module.init_array:
