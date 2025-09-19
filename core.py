@@ -26,7 +26,7 @@ from .instruction import EXTEND_INSTRUCTIONS
 from .memory import MemoryManager
 from .log import get_logger
 from .os import AndroidOs, ANDROID_SYSCALL_MAP, IosOs, IOS_SYSCALL_MAP
-from .typing import UserData, HookFuncCallable, HookMemCallable
+from .typing import EndianType, HookContext, HookFuncCallable, HookMemCallable
 from .utils import aligned, to_signed
 
 try:
@@ -65,6 +65,9 @@ class Chomper:
             so this will slow down the emulation.
         trace_symbol_calls: Print log when any symbol is called.
         trace_inst_callback: Custom instruction trace callback.
+        user_hook_func: User-defined hook function that will be called after interrupt
+            handler setup. This function receives the Chomper instance as parameter
+            and can be used to add custom hooks like emu.add_hook().
     """
 
     os: Union[AndroidOs, IosOs]
@@ -75,7 +78,7 @@ class Chomper:
         mode: int = const.MODE_ARM,
         os_type: int = const.OS_ANDROID,
         logger: Optional[logging.Logger] = None,
-        endian: const.EndianType = const.LITTLE_ENDIAN,
+        endian: EndianType = const.LITTLE_ENDIAN,
         rootfs_path: Optional[str] = None,
         enable_vfp: bool = True,
         enable_objc: bool = True,
@@ -83,6 +86,7 @@ class Chomper:
         trace_inst: bool = False,
         trace_symbol_calls: bool = False,
         trace_inst_callback: Optional[HookFuncCallable] = None,
+        user_hook_func: Optional[Callable[["Chomper"], None]] = None,
     ):
         self._setup_arch(arch)
 
@@ -115,6 +119,10 @@ class Chomper:
 
         self._setup_emulator(enable_vfp=enable_vfp)
         self._setup_interrupt_handler()
+        
+        # 调用用户自定义的hook函数
+        if user_hook_func:
+            user_hook_func(self)
 
         self._setup_os(os_type, rootfs_path=rootfs_path)
 
@@ -245,7 +253,9 @@ class Chomper:
             # self.logger.info(f"Start emulate at {self.debug_symbol(address)}")
             # print(f"emu_start address 0x{address:x}")
             self.uc.emu_start(address, stop_addr)
-            return self.get_retval()
+            retval = self.get_retval()
+            # print(f"retval: {retval}")
+            return retval
         except UcError as e:
             self.crash("Unknown reason", exc=e)
         finally:
@@ -328,7 +338,7 @@ class Chomper:
     def add_hook(
         self,
         symbol_or_addr: Union[int, str],
-        callback: HookFuncCallable,
+        callback: Optional[HookFuncCallable] = None,
         user_data: Optional[dict] = None,
     ) -> int:
         """Add hook to the emulator.
@@ -411,7 +421,7 @@ class Chomper:
         """Add interceptor to the emulator."""
 
         @wraps(callback)
-        def decorator(uc: Uc, address: int, size: int, user_data_: UserData):
+        def decorator(uc: Uc, address: int, size: int, user_data_: HookContext):
             emu = user_data_["emu"]
             address = emu.uc.reg_read(emu.arch.reg_pc)
 
@@ -423,6 +433,7 @@ class Chomper:
             if address == emu.uc.reg_read(emu.arch.reg_pc):
                 emu.uc.reg_write(emu.arch.reg_pc, emu.uc.reg_read(emu.arch.reg_lr))
 
+        print(f"add_interceptor symbol_or_addr: 0x{symbol_or_addr:x}")
         return self.add_hook(symbol_or_addr, decorator, user_data)
 
     def del_hook(self, handle: int):
@@ -457,7 +468,7 @@ class Chomper:
         else:
             self.logger.info(f'Symbol "{symbol.name}" called')
 
-    def trace_inst_callback(self, uc: Uc, address: int, size: int, user_data: UserData):
+    def trace_inst_callback(self, uc: Uc, address: int, size: int, user_data: HookContext):
         """Trace instruction."""
         if self._trace_inst_callback:
             self._trace_inst_callback(uc, address, size, user_data)
@@ -714,11 +725,94 @@ class Chomper:
         except Exception as e:
             print(f"解析文件 {file_path} 时出错: {e}")
             return None
-
+    
+    def dump_memory_with_width(self, addr: int, width: int):
+        """
+        Python版本的dumpMemeryWithWidth函数
+        根据OC代码：NS_INLINE void dumpMemeryWithWidth(int64_t* addr,int width)
+        
+        Args:
+            addr: 内存地址
+            width: 要dump的内存宽度（以64位为单位）
+        """
+        print("-------------------------------------------")
+        for i in range(width):
+            try:
+                # 读取64位值
+                value = self.os.emu.read_u64(addr + i * 8)
+                print(f"memory dump >{addr + i * 8:016x}:{value:016x}<")
+            except Exception as e:
+                print(f"memory dump >{addr + i * 8:016x}:<error reading memory: {e}>")
+                
     def hook_mem_read_unmapped(self, uc, address: int, size: int, user_data: dict):
         print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
-        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+              f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+              f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} "
+              f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} "
+              f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} "
+              f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} "
+              f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} "
+              f"x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} "
+              f"x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} "
+              f"x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} "
+              f"x21 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X21')):x} "
+              f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x} "
+              f"x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} "
+              f"x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} "
+              f"x25 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X25')):x} "
+              f"x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} "
+              f"x27 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X27')):x} "
+              f"x28 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X28')):x} "
+              f"x29 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X29')):x} "
+              f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        print(f"0x1D6101370:0x{int.from_bytes(uc.mem_read(0x1D6101370, 8), byteorder=self.endian):x}")
+    
+    def print_registers_and_backtrace(self, uc, address: int, size: int, user_data: dict):
+        print(f"[print_registers_and_backtrace] 地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+              f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+              f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} "
+              f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} "
+              f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} "
+              f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} "
+              f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} "
+              f"x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} "
+              f"x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} "
+              f"x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} "
+              f"x21 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X21')):x} "
+              f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x} "
+              f"x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} "
+              f"x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} "
+              f"x25 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X25')):x} "
+              f"x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} "
+              f"x27 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X27')):x} "
+              f"x28 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X28')):x} "
+              f"x29 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X29')):x} "
+              f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.log_backtrace()
 
+    def hook_mem_read_unmapped_1800B5FBC(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+              f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+              f"x2 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+              f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}"
+              )
+        self.log_backtrace()
+        
+    def hook_mem_read_unmapped_1800B3524(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"0xFFFFFC023:0x{self.os.emu.read_u64(0xFFFFFC023):x}")
+        print(f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x}")
+        
+    def hook_mem_read_unmapped_1800A12D0(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        
+    def hook_mem_read_unmapped_1800A12E4(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X8'), 0x400e0e01)
+    
     def load_module(
         self,
         module_file: str,
@@ -727,6 +821,9 @@ class Chomper:
         trace_inst: bool = False,
         trace_symbol_calls: bool = False,
         need_map_mem: bool = False,
+        specify_module_base: Optional[int] = None,
+        app_framework: Optional[bool] = False,
+        is_user_lib: Optional[bool] = False,
     ) -> Module:
         """Load executable file from path.
 
@@ -757,35 +854,77 @@ class Chomper:
         #     prev = self.modules[-1]
         #     module_base = aligned(prev.base + prev.size, 1024 * 1024)
 
+        if specify_module_base:
+            module_base = specify_module_base
+
         module = self.os.loader.load(
             module_base=module_base,
             module_file=module_file,
             trace_symbol_calls=trace_symbol_calls or self._trace_symbol_calls,
             map_mem=need_map_mem,
+            app_framework=app_framework,
         )
+
+        if is_user_lib:
+            # 存储 dyld 信息到字典中
+            image_index = len(self.os._dyld_image_info)
+            print(f"存储 dyld 信息到字典中 module_file: {module_file} module.base: {module.base} image_index: {image_index}")
+            self.os._dyld_image_info[image_index] = {
+                'dli_fname': module_file,  # 模块文件路径
+                'dli_fbase': module.base,  # 模块基地址
+                'dli_sname': '__dso_handle',  # 固定符号名
+                'dli_saddr': module.base,  # 符号地址（使用基地址）
+                'module_name': module_file,  # 模块名称（用于调试）
+            }
 
         self.modules.append(module)
         
-        if module_file.endswith("/Taobao4iPhone"):
-            self.os.emu.add_hook(0x1003E8CAC, self.hook_mem_read_unmapped) # +[LTCDecompressor_MainImage load] end
-            # self.os.emu.add_hook(0x193E28520, self.hook_mem_read_unmapped) #_load_images end
-            # self.os.emu.add_hook(0x193E27EAC, self.hook_mem_read_unmapped) #_load_images start
-            self.os.emu.add_hook(0x193E2EF74, self.hook_mem_read_unmapped) #_class_getName start
-            self.os.emu.add_hook(0x193E2E700, self.hook_mem_read_unmapped)
-            self.os.emu.add_hook(0x193E2E480, self.hook_mem_read_unmapped)
-            self.os.emu.add_hook(0x193E2E498, self.hook_mem_read_unmapped)
+        # print(f"0x1D6101370:0x{int.from_bytes(self.os.emu.uc.mem_read(0x1D6101370, 8), byteorder=self.endian):x}")
 
-           
-            # self.os.emu.add_hook(0x193E27F4C, self.hook_mem_read_unmapped)
-            # self.os.emu.add_hook(0x193E27F64, self.hook_mem_read_unmapped)
-            # self.os.emu.add_hook(0x193E27F7C, self.hook_mem_read_unmapped)
-            # self.os.emu.add_hook(0x193E27F94, self.hook_mem_read_unmapped)
-            # self.os.emu.add_hook(0x193E27FAC, self.hook_mem_read_unmapped)
-            # self.os.emu.add_hook(0x193E27FC4, self.hook_mem_read_unmapped)
-    
-            # print(f"call Taobao4iPhone +[LTCDecompressor_MainImage load] at 0x1003E88B8")
-            # self.os.emu.call_address(0x1003E88B8) #+[LTCDecompressor_MainImage load]
+        if module_file.endswith("/Taobao4iPhone"):
+            # # self.os.emu.add_hook(0x18007F0D4, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x1800B3524, self.hook_mem_read_unmapped_1800B3524)
+            # # self.os.emu.add_hook(0x1800B601C, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x1800B5FE4, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x1800B5FE8, self.hook_mem_read_unmapped)
             
+            # # self.os.emu.add_hook(0x1000082B8, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x106E640EC, self.hook_mem_read_unmapped)
+
+            # # # self.os.emu.add_hook(0x193E1A49C, self.hook_mem_read_unmapped)
+            # # # self.os.emu.add_hook(0x193E1A4F8, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x193E1A494, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x193E1A540, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x193E1A460, self.hook_mem_read_unmapped)
+
+            # self.os.emu.add_hook(0x1800B5FBC, self.hook_mem_read_unmapped_1800B5FBC)
+            
+            # self.os.emu.add_hook(0x10000FE5C, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x10000FE60, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x10000FE64, self.hook_mem_read_unmapped)
+            # # self.os.emu.add_hook(0x10000FE68, self.hook_mem_read_unmapped)
+
+            # # self.os.emu.add_hook(0x106E4C194, self.hook_mem_read_unmapped)
+           
+            # # self.os.emu.add_hook(0x18161AA44, self.hook_mem_read_unmapped)
+           
+            # # # self.os.emu.add_hook(0x1800A12D0, self.hook_mem_read_unmapped_1800A12D0)
+            # # self.os.emu.add_hook(0x1800A12E4, self.hook_mem_read_unmapped_1800A12E4)
+
+            # # not passed
+            # # self.os.emu.add_hook(0x1C6ABB7F0, self.hook_mem_read_unmapped)
+            # # passed
+            # # self.os.emu.add_hook(0x1C6ABCD2C, self.hook_mem_read_unmapped) 
+
+
+            # self.os.emu.add_hook(0x1028149F0, self.print_registers_and_backtrace)
+            # self.os.emu.add_hook(0x1003D338C, self.print_registers_and_backtrace)
+            # self.os.emu.add_hook(0x100F78BE0, self.print_registers_and_backtrace)
+            # self.os.emu.add_hook(0x100A2E4B0, self.print_registers_and_backtrace)
+            # self.os.emu.add_hook(0x100F78AE4, self.print_registers_and_backtrace)
+            
+           
+
         # Trace instructions
         if trace_inst or self._trace_inst:
             self.add_inst_trace(module)
@@ -793,6 +932,10 @@ class Chomper:
         if exec_objc_init and isinstance(self.os, IosOs):
             print(f"call init_objc in load_module module: {module.name}")
             self.os.init_objc(module)
+
+        if module_file.endswith("/Taobao4iPhone"):
+            print(f"0x107391060:0x{self.os.emu.read_u64(0x107391060):x}")
+            self.os.emu.write_u64(0x10A8BED08, 0x10285FFCC)
 
         if exec_init_array and module.init_array:
             self.exec_init_array(module.init_array)
@@ -1030,6 +1173,10 @@ class Chomper:
 
         self.write_bytes(address, data)
 
+    def write_zeros(self, address: int, size: int):
+        """Write zeros into the address."""
+        self.uc.mem_write(address, b"\x00" * size)
+
     def call_symbol(
         self,
         symbol_name: str,
@@ -1037,12 +1184,12 @@ class Chomper:
         va_list: Optional[Sequence[int]] = None,
     ) -> int:
         """Call function with the symbol name."""
-        self.logger.info(f'Call symbol "{symbol_name}"')
+        # self.logger.info(f'Call symbol "{symbol_name}"')
 
         symbol = self.find_symbol(symbol_name)
         address = symbol.address
 
-        print(f"call_symbol address 0x{address:x}")
+        # print(f"call_symbol address 0x{address:x}")
         return self._start_emulate(address, *args, va_list=va_list)
 
     def call_address(

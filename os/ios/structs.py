@@ -126,3 +126,53 @@ class Rusage(ctypes.Structure):
         ("ru_nvcsw", ctypes.c_int64),
         ("ru_nivcsw", ctypes.c_int64),
     ]
+
+class SockaddrUn(ctypes.Structure):
+    _fields_ = [
+        ("sun_len", ctypes.c_uint8),
+        ("sun_family", ctypes.c_uint8),
+        ("sun_path", ctypes.c_char * 104),
+    ]
+
+
+class SockaddrIn(ctypes.Structure):
+    _fields_ = [
+        ("sin_len", ctypes.c_uint8),
+        ("sin_family", ctypes.c_uint8),
+        ("sin_port", ctypes.c_uint16),
+        ("sin_addr", ctypes.c_uint32),
+        ("sin_zero", ctypes.c_char * 8),
+    ]
+
+
+class MachMsgHeaderT(ctypes.Structure):
+    _fields_ = [
+        ("msgh_bits", ctypes.c_uint32),
+        ("msgh_size", ctypes.c_uint32),
+        ("msgh_remote_port", ctypes.c_uint32),
+        ("msgh_local_port", ctypes.c_uint32),
+        ("msgh_voucher_port", ctypes.c_uint32),
+        ("msgh_id", ctypes.c_int32),
+    ]
+
+
+class NDRRecordT(ctypes.Structure):
+    _fields_ = [
+        ("mig_vers", ctypes.c_uint8),
+        ("if_vers", ctypes.c_uint8),
+        ("reserved1", ctypes.c_uint8),
+        ("mig_encoding", ctypes.c_uint8),
+        # ("int_rep", ctypes.c_uint8),
+        # ("char_rep", ctypes.c_uint8),
+        # ("float_rep", ctypes.c_uint8),
+        # ("reserved2", ctypes.c_uint8),
+    ]
+
+
+class ReplayFmtT(ctypes.Structure):
+    _pack_ = 4
+    _fields_ = [
+        ("hdr", MachMsgHeaderT),
+        ("ndr", NDRRecordT),
+        ("kr", ctypes.c_uint32),
+    ]

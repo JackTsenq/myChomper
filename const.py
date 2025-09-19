@@ -4,12 +4,16 @@ if sys.version_info >= (3, 8):
     from typing import Literal
 else:
     from typing_extensions import Literal
-
+    
 # Endian type
-EndianType = Literal["little", "big"]
-
 BIG_ENDIAN: Literal["big"] = "big"
 LITTLE_ENDIAN: Literal["little"] = "little"
+
+# Precision type
+SINGLE_PRECISION: Literal["single"] = "single"
+DOUBLE_PRECISION: Literal["double"] = "double"
+
+
 
 # Supported arch
 ARCH_ARM = 1

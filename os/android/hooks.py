@@ -4,7 +4,7 @@ from typing import Callable, Dict
 from unicorn import Uc
 
 from chomper.os.ios import hooks as ios_hooks
-from chomper.typing import UserData
+from chomper.typing import HookContext as UserData
 
 hooks: Dict[str, Callable] = {}
 

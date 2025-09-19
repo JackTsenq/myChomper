@@ -87,7 +87,7 @@ KERNEL_PARAMETERS: Dict[str, SysctlReturnValue] = {
     "hw.ncpu": 6,
     "hw.byteorder": 1234,
     "hw.memsize": 3899293696,
-    "hw.activecpu": 6,
+    "hw.activecpu": 1, # 6
     "hw.physicalcpu": 6,
     "hw.physicalcpu_max": 6,
     "hw.logicalcpu": 6,

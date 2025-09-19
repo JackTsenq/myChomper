@@ -90,6 +90,16 @@ class BaseLoader(ABC):
 
             # Hook symbol
             if self.emu.hooks.get(symbol.name):
+                # dispatch_channel_async是 dispatch_async函数的选择器，不应该hook
+                if symbol.address == 0x1800A2428:
+                    symbol.address = 0x18004C650
+                # dispatch_once本身不执行逻辑，交给_dispatch_once$VARIANT$mp执行
+                if symbol.address == 0x1800A3328:
+                    symbol.address = 0x18004A25C
+                # dispatch_resume
+                if symbol.address == 0x1800a35a8:
+                    symbol.address = 0x180048F38
+
                 self.emu.logger.info(
                     f'Hook export symbol "{symbol.name}" '
                     f"at {self.emu.debug_symbol(symbol.address)}"

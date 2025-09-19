@@ -19,7 +19,7 @@ from .syscall import get_syscall_handlers
 import lief
 from lief.MachO import ARM64_RELOCATION, RelocationFixup
 
-from unicorn import arm64_const
+from unicorn import arm64_const, UcError
 
 # Environment variables
 ENVIRON_VARS = r"""SHELL=/bin/sh
@@ -125,10 +125,51 @@ ONLY_MAP = [
     "ShareSheet",
     "UserNotifications",
     "libWirelessAudioIPC.dylib",
+    "libCRFSuite.dylib",
+    "ContextKitExtraction",
+    "CoreHaptics",
+    "libsystem_containermanager.dylib",
+    "libFaultOrdering.dylib",
+    "CoreVideo",
+    "CMCapture",
     "libAppleArchive.dylib", #taobao
     "CoreParsec", #taobao
     "AssetsLibraryServices", #taobao
+    "libGSFont.dylib",
+    "AppleCV3D",
+    "RealityKit",
+    "libGSFontCache.dylib",
+    "AppleFSCompression",
+    "PDFKit",
+    "CoreGraphics",
+    "libMobileGestalt.dylib",
+    "UIKit",
+    "DataMigration",
+    "CoreDuetContext",
+    "MultipeerConnectivity",
+    "SceneKit",
+    "AppleCV3DMOVKit",
+    "DesktopServicesPriv",
+    "DeviceToDeviceManager",
+    "SoundAnalysis",
+    "DiagnosticsKit",
+    "OpenGLES",
+    "libFontParser.dylib",
+    "CoreSDB",
+    "ActionKit",
+    "H6ISP.mediacapture",
+    "ABMHelper",
+    "libunwind.dylib",
+    "ImageIO",
+    "FontServices",
+    "libMemoryResourceException.dylib",
+    "AudioToolbox",
+    "Montreal",
+    "CoreServicesInternal",
 ]
+
+# 导出 ALL_MODULES 供其他模块使用
+ALL_MODULES = OBJC_DEPENDENCIES + UI_KIT_DEPENDENCIES + ONLY_MAP
 
 # Define symbolic links in the file system
 SYMBOLIC_LINKS = {
@@ -164,6 +205,21 @@ class IosOs(BaseOs):
 
     AT_FDCWD = to_unsigned(-2, size=4)
 
+    AF_UNIX = 1
+    AF_INET = 2
+
+    SOCK_STREAM = 1
+
+    IPPROTO_IP = 0
+    IPPROTO_ICMP = 1
+
+    MACH_PORT_NULL = 0
+    MACH_PORT_HOST_SELF = 1
+    MACH_PORT_TASK_SELF = 2
+    MACH_PORT_TIMER = 3
+    MACH_PORT_NOTIFICATION_CENTER = 4
+
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -180,6 +236,9 @@ class IosOs(BaseOs):
 
         self.preferences = DEFAULT_PREFERENCES.copy()
         self.device_info = DEFAULT_DEVICE_INFO.copy()
+        
+        # Initialize thread management
+        self._threads = {}
 
     @property
     def errno(self) -> int:
@@ -322,30 +381,136 @@ class IosOs(BaseOs):
 
     def _setup_kernel_mmio(self):
         """Initialize MMIO used by system libraries."""
+        
+        # MMIO区域数据存储，基于真机dump数据初始化
+        self.mmio_data = {}
+        
+        # 根据真机dump数据初始化MMIO区域 (16进制int64_t数据)
+        # 地址 0xFFFFFC000: 656761706d6d6f63
+        self.mmio_data[0x0] = 0x656761706d6d6f63
+        
+        # 地址 0xFFFFFC008: 7469622d343620
+        self.mmio_data[0x8] = 0x7469622d343620
+        
+        # 地址 0xFFFFFC010: 10237a0
+        self.mmio_data[0x10] = 0x10237a0
+        
+        # 地址 0xFFFFFC018: 3000000000000
+        self.mmio_data[0x18] = 0x3000000000000
+        
+        # 地址 0xFFFFFC020: 400e0e010237a0 (包含我们需要的0x400e0e01)
+        self.mmio_data[0x20] = 0x400e0e010237a0
+        
+        # 地址 0xFFFFFC028: 0
+        self.mmio_data[0x28] = 0x0
+        
+        # 地址 0xFFFFFC030: e02020200000000
+        self.mmio_data[0x30] = 0xe02020200000000
+        
+        # 地址 0xFFFFFC038: 7da64000
+        self.mmio_data[0x38] = 0x7da64000
 
         def read_cb(uc, offset, size_, read_ud):
-            # arch type
-            if offset == 0x23:
-                return 0x2
-            # vm_page_shift
-            elif offset == 0x25:
-                return 0xE
-            # vm_kernel_page_shift
-            elif offset == 0x37:
-                return 0xE
-            # unknown, appear at _os_trace_init_slow
-            elif offset == 0x104:
-                return 0x100
-
+            # print(f"read_cb offset {offset} size_ {size_}")
+            
+            # 计算对齐的偏移量（8字节对齐）
+            aligned_offset = offset & ~0x7
+            
+            # 从存储的数据中读取
+            if aligned_offset in self.mmio_data:
+                value = self.mmio_data[aligned_offset]
+                
+                # 计算字节偏移
+                byte_offset = offset - aligned_offset
+                
+                # 提取相应位置的数据
+                if size_ == 1:
+                    extracted = (value >> (byte_offset * 8)) & 0xFF
+                elif size_ == 2:
+                    extracted = (value >> (byte_offset * 8)) & 0xFFFF
+                elif size_ == 4:
+                    extracted = (value >> (byte_offset * 8)) & 0xFFFFFFFF
+                elif size_ == 8:
+                    extracted = value
+                else:
+                    extracted = 0
+                
+                # print(f"read_cb: offset={offset}, aligned_offset={aligned_offset}, byte_offset={byte_offset}, value=0x{value:x}, extracted=0x{extracted:x}")
+                return extracted
+            else:
+                # 保持原有的硬编码逻辑作为后备
+                if offset == 0x23:
+                    return 0x2
+                elif offset == 0x25:
+                    return 0xE
+                elif offset == 0x37:
+                    return 0xE
+                elif offset == 0x104:
+                    return 0x100
+            
             return 0
 
         def write_cb(uc, offset, size_, value, write_ud):
-            pass
+            # 支持MMIO写入操作
+            if size_ == 1:
+                mask = 0xFF
+            elif size_ == 2:
+                mask = 0xFFFF
+            elif size_ == 4:
+                mask = 0xFFFFFFFF
+            elif size_ == 8:
+                mask = 0xFFFFFFFFFFFFFFFF
+            else:
+                return
+            
+            # 确保偏移量对齐
+            aligned_offset = offset & ~(size_ - 1)
+            
+            # 读取当前值
+            current_value = self.mmio_data.get(aligned_offset, 0)
+            
+            # 计算写入位置
+            byte_offset = offset - aligned_offset
+            shift = byte_offset * 8
+            
+            # 清除目标位置的值
+            clear_mask = ~(mask << shift)
+            current_value &= clear_mask
+            
+            # 写入新值
+            new_value = (value & mask) << shift
+            current_value |= new_value
+            
+            # 保存更新后的值
+            self.mmio_data[aligned_offset] = current_value
+            
+            # print(f"MMIO Write: offset=0x{offset:x}, size={size_}, value=0x{value:x}, result=0x{current_value:x}")
 
         address = 0xFFFFFC000
         size = 0x1000
 
         self.emu.uc.mmio_map(address, size, read_cb, None, write_cb, None)
+    
+    def debug_mmio_region(self):
+        """调试MMIO区域，打印当前状态"""
+        print("=== MMIO Region Debug Info ===")
+        base_addr = 0xFFFFFC000
+        
+        for offset in sorted(self.mmio_data.keys()):
+            addr = base_addr + offset
+            value = self.mmio_data[offset]
+            print(f"Address 0x{addr:x}: 0x{value:x}")
+        
+        # 特别检查0xFFFFFC023处的值
+        test_addr = 0xFFFFFC023
+        test_offset = test_addr - base_addr
+        if test_offset in self.mmio_data:
+            aligned_offset = test_offset & ~0x7  # 8字节对齐
+            byte_offset = test_offset - aligned_offset
+            value = self.mmio_data[aligned_offset]
+            extracted = (value >> (byte_offset * 8)) & 0xFFFFFFFF
+            print(f"Address 0x{test_addr:x} (offset 0x{test_offset:x}): 0x{extracted:x}")
+        print("===============================")
 
     def _init_program_vars(self):
         """Initialize program variables, works like `__program_vars_init`."""
@@ -459,13 +624,15 @@ class IosOs(BaseOs):
         mach_header_ptrs = self.emu.create_buffer(self.emu.arch.addr_size)
 
         mh_execute_header_pointer = self.emu.find_symbol("__mh_execute_header_pointer")
-
+        
         self.emu.write_pointer(mach_header_ptrs, mach_header_ptr)
         self.emu.write_pointer(mh_execute_header_pointer.address, mach_header_ptr)
 
+       
         try:
             self.emu.call_symbol("_map_images", 1, 0, mach_header_ptrs)
             self.emu.call_symbol("_load_images", 0, mach_header_ptr)
+
         except EmulatorCrashed:
             self.emu.logger.warning("Initialize Objective-C failed.")
 
@@ -487,18 +654,32 @@ class IosOs(BaseOs):
             "usr/lib",
             "System/Library/Frameworks",
             "System/Library/PrivateFrameworks",
+            "System/Library/MediaCapture",
         ]
 
         for lib_dir in lib_dirs:
             path = os.path.join(self.rootfs_path or ".", lib_dir)
 
+            # 直接搜索 dylib 文件
             lib_path = os.path.join(path, module_name)
             if os.path.exists(lib_path):
                 return lib_path
 
+            # 搜索 framework 中的主二进制文件
             framework_path = os.path.join(path, f"{module_name}.framework")
             if os.path.exists(framework_path):
                 return os.path.join(framework_path, module_name)
+
+            # 搜索 framework 内部的 dylib 文件
+            # 例如：FontServices.framework/libGSFont.dylib
+            for framework_name in os.listdir(path) if os.path.exists(path) else []:
+                if framework_name.endswith('.framework'):
+                    framework_dir = os.path.join(path, framework_name)
+                    if os.path.isdir(framework_dir):
+                        # 在 framework 内部搜索 dylib 文件
+                        dylib_path = os.path.join(framework_dir, module_name)
+                        if os.path.exists(dylib_path):
+                            return dylib_path
 
         raise FileNotFoundError("Module '%s' not found" % module_name)
 
@@ -550,18 +731,47 @@ class IosOs(BaseOs):
     def map_all_modules(self, module_names: List[str]):
         vm_maps_info = []
         vm_write_info = []
+        binaries = []
+        
+        # 初始化 dyld 信息字典，用于 _dyld_get_image_header 函数
+        if not hasattr(self, '_dyld_image_info'):
+            self._dyld_image_info = {}
+        
         for module_name in module_names:
             # print(f"module_name {module_name}")
             # print(f"module_name {module_name}")
-            if self.emu.find_module(module_name):
-                continue
+            # if self.emu.find_module(module_name):
+            #     continue
             module_file = self.search_module_binary(module_name)
             binary: lief.MachO.Binary = lief.parse(module_file)  # type: ignore
+            binaries.append(binary)
+
+            # 获取模块的第一个段的首地址作为基地址
+            first_segment = None
+            for segment in binary.segments:
+                if segment.virtual_address > 0:
+                    first_segment = segment
+                    break
+            
+            if first_segment:
+                # 计算段映射地址
+                segment_map_addr = aligned(first_segment.virtual_address, 1024) - (1024 if first_segment.virtual_address % 1024 else 0)
+                
+                # 存储 dyld 信息到字典中
+                image_index = len(self._dyld_image_info)
+                self._dyld_image_info[image_index] = {
+                    'dli_fname': module_file,  # 模块文件路径
+                    'dli_fbase': segment_map_addr,  # 模块基地址
+                    'dli_sname': '__dso_handle',  # 固定符号名
+                    'dli_saddr': segment_map_addr,  # 符号地址（使用基地址）
+                    'module_name': module_name,  # 模块名称（用于调试）
+                }
 
             for segment in binary.segments:
                 segment_map_addr = aligned(segment.virtual_address, 1024) - (1024 if segment.virtual_address % 1024 else 0)
                 segment_map_size = aligned(segment.virtual_address - segment_map_addr + segment.virtual_size, 1024)
                 vm_maps_info.append((segment_map_addr,segment_map_size))
+                # print(f"module_name {module_name} segment_map_addr 0x{segment_map_addr:x} segment_map_size 0x{segment_map_size:x}");
                 # print(f"module_name {module_name} segment {segment} segment.name {segment.name} vm_write_info segment.virtual_address 0x{segment.virtual_address:x} segment.content {segment.content} segment.size {segment.size} len(segment.content) {len(segment.content)}")
                 # print(f"segment.virtual_address 0x{segment.virtual_address:x} segment.content: {segment.content} len: 0x{len(segment.content):x} segment.content[:4] {' '.join(f'0x{byte:02x}' for byte in segment.content[:4])}")
                 vm_write_info.append((segment.virtual_address,bytearray(segment.content)))
@@ -586,6 +796,18 @@ class IosOs(BaseOs):
                     bytes(content),
                 )
                 # print(f"map_all_modules {' '.join(f'0x{byte:02x}' for byte in self.emu.uc.mem_read(0x1AB4758C4,4))} {self.emu.uc.mem_read(0xFFFFFC025,4)} {self.emu.uc.mem_read(0x1D610141C,4)}")
+
+        for binary in binaries:
+            for segment in binary.segments:
+                if segment.name in ["__DATA", "__DATA_DIRTY"]:
+                    for section in segment.sections:
+                        if section.name == "__bss":
+                            if section:
+                                print(f"memset_bss_section: found __bss segment - virtual_address: 0x{section.virtual_address:x}, size: {section.size}")
+                                self.emu.write_zeros(section.virtual_address, section.size)
+
+        # if module.name == "UIKitCore":
+        #     print(f"UIKitCore 0x1D616ED08:{self.emu.uc.mem_read(0x1D616ED08,8)}")
 
         # for module_name in module_names:
         #     # print(f"module_name {module_name}")
@@ -619,8 +841,34 @@ class IosOs(BaseOs):
     # 定义错误钩子：当发生未映射内存读操作时触发
     def hook_mem_read_unmapped(self, uc, address: int, size: int, user_data: dict):
         print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
-        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+        f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+        f"x2 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+        f"x3 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X3')):x} "
+        f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} "
+        f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} "
+        f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} "
+        f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} "
+        f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} "
+        f"x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} "
+        f"x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} "
+        f"x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} "
+        f"x21 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X21')):x} "
+        f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x} "
+        f"x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} "
+        f"x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} "
+        f"x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} "
+        f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")  
 
+    def hook_mem_read_unmapped_1AB4994D4(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        self.emu.log_backtrace()
+
+        # try:
+        #     print(f"0x80228e0: 0x{self.emu.uc.mem_read(0x80228e0, 4)}")
+        # except UcError:
+        #     print("0x80228e0: 内存未映射")
+            
     def hook_mem_read_unmapped_1(self, uc, address: int, size: int, user_data: dict):
         print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
         print(f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x}")
@@ -662,6 +910,218 @@ class IosOs(BaseOs):
         print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
         print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x2 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
 
+    def hook_mem_read_unmapped_dump_1d61157c8(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        print(f"0x1D61157C8: 0x{self.emu.uc.mem_read(0x1D61157C8, 8)}")
+        print(f"0x1D61157D0: 0x{self.emu.uc.mem_read(0x1D61157D0, 8)}")
+        print(f"0x1D61157D8: 0x{self.emu.uc.mem_read(0x1D61157D8, 8)}")
+        print(f"0x1D61157E0: 0x{self.emu.uc.mem_read(0x1D61157E0, 8)}")
+        try:
+            print(f"0x80228e0: 0x{self.emu.uc.mem_read(0x80228e0, 4)}")
+        except UcError:
+            print("0x80228e0: 内存未映射")
+
+    def hook_mem_read_unmapped_dump_193E23FDC(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x}:0x{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')), 4)}")
+    
+    def hook_mem_read_unmapped_dump_193E33DB0(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x}")
+
+    def hook_mem_read_unmapped_dump_193E33D64(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x}")
+    
+    def hook_mem_read_unmapped_dump_193E33D54(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} 0x1D6103F48:0x{self.emu.uc.mem_read(0x1D6103F48, 8)} 0x1D6103F50:0x{self.emu.uc.mem_read(0x1D6103F50, 4)} 0x1D6103F54:0x{self.emu.uc.mem_read(0x1D6103F54, 4)}")
+    
+    def hook_mem_read_unmapped_dump_193E33D74(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x12 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X12')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x}")
+
+    def hook_mem_read_unmapped_dump_193E33D90(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x}")
+        print(f"0x1d6119850:0x{self.emu.uc.mem_read(0x1d6119850, 8)}")
+
+    def hook_mem_read_unmapped_dump_193e1c47c(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        print(f"x9: 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x}:{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')), 4)}")
+        print(f"x9 + 4: 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')+4):x}:{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')) + 4, 4)}")
+        print(f"x9 + 8: 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')+8):x}:{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')) + 8, 4)}")
+        print(f"x9 + 12: 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')+12):x}:{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')) + 12, 4)}")
+    
+    def hook_mem_read_unmapped_dump_193E1C480(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x}:{self.emu.uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')), 4)}")
+    
+    def hook_mem_read_unmapped_callStack(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x3 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X3')):x} "
+            f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} "
+            f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} "
+            f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} "
+            f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} "
+            f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} "
+            f"x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} "
+            f"x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} "
+            f"x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} "
+            f"x21 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X21')):x} "
+            f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x} "
+            f"x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} "
+            f"x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} "
+            f"x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} "
+            f"x29 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X29')):x} "
+            f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")  
+
+    def hook_mem_read_unmapped_1C6ABB084(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x}");
+        # self.debug_mmio_region()
+
+    def hook_mem_read_unmapped_1C6ABB080(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x}:0x{int.from_bytes(uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')),8), byteorder=self.emu.endian):x}");
+
+    def hook_mem_read_unmapped_1817209EC(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+        )
+        self.dumpMemeryWithWidth(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')), 5)
+        self.dumpMemeryWithWidth(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')), 5)
+        self.emu.log_backtrace()
+
+    def dumpMemeryWithWidth(self, addr: int, width: int):
+        """Dump memory with specified width, similar to Objective-C version.
+        
+        Args:
+            addr: Memory address to start dumping from
+            width: Number of int64_t values to dump
+        """
+        print("-------------------------------------------")
+        for i in range(width):
+            try:
+                # Read 8 bytes (int64_t) from memory
+                mem_data = self.emu.uc.mem_read(addr + i * 8, 8)
+                # Convert bytes to int64_t value
+                value = int.from_bytes(mem_data, byteorder=self.emu.endian, signed=True)
+                print(f"memery dump >{addr + i * 8:x}:{value:x}<")
+            except Exception as e:
+                print(f"memery dump >{addr + i * 8:x}:<error reading memory: {e}>")
+
+    def hook_mem_read_unmapped_1817209D4(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        self.dumpMemeryWithWidth(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')) + 8, 5)
+       
+    def hook_mem_read_unmapped_1817209B0(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        self.emu.log_backtrace()
+    def hook_mem_read_unmapped_18004B850(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        # self.emu.dump_memory_with_width(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')), 5)
+        # self.emu.log_backtrace()
+    def hook_mem_read_unmapped_1800A6480(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.dumpMemeryWithWidth(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')), 6)
+        self.dumpMemeryWithWidth(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')), 6)
+        uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X1'), 0x50000)
+        uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X2'), 0x403)
+
+    
+    
+    def hook_mem_read_unmapped_1C6ABB7D0(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x}:0x{int.from_bytes(uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')),8), byteorder=self.emu.endian):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        # uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X1'), 0x50000)
+        # uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X2'), 0x403)
+    def hook_mem_read_unmapped_1C6ABB9E0(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x}:0x{int.from_bytes(uc.mem_read(uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')),8), byteorder=self.emu.endian):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X1'), 0x403)
+        uc.reg_write(getattr(arm64_const, f'UC_ARM64_REG_X2'), 0x402)
+
+    def hook_mem_read_unmapped_100009274(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.emu.log_backtrace()
+
+    def hook_mem_read_unmapped_100008194(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.emu.log_backtrace()
+        
+    def hook_mem_read_unmapped_100008148(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.emu.log_backtrace()
+
+    def hook_mem_read_unmapped_10276A708(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.emu.log_backtrace()
+        
+    def hook_mem_to_print_log_backtrace(self, uc, address: int, size: int, user_data: dict):
+        print(f"[core.py] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+            f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+            f"x2 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+            f"x30 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")
+        self.emu.log_backtrace()
+    def hook_mem_to_print_all_reg(self, uc, address: int, size: int, user_data: dict):
+        print(f"[错误] 尝试读取未映射内存：地址=0x{address:x}, 大小={size}字节")
+        print(f"x0 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X0')):x} "
+        f"x1 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X1')):x} "
+        f"x2 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X2')):x} "
+        f"x3 {uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X3')):x} "
+        f"x8 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X8')):x} "
+        f"x9 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X9')):x} "
+        f"x10 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X10')):x} "
+        f"x11 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X11')):x} "
+        f"x16 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X16')):x} "
+        f"x17 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X17')):x} "
+        f"x19 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X19')):x} "
+        f"x20 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X20')):x} "
+        f"x21 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X21')):x} "
+        f"x22 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X22')):x} "
+        f"x23 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X23')):x} "
+        f"x24 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X24')):x} "
+        f"x26 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X26')):x} "
+        f"x30 0x{uc.reg_read(getattr(arm64_const, f'UC_ARM64_REG_X30')):x}")  
+
     def resolve_modules(self, module_names: List[str]):
         """Load system modules if don't loaded."""
         fixup = SystemModuleFixup(self.emu)
@@ -671,193 +1131,6 @@ class IosOs(BaseOs):
         # print(f"resolve_modules 1 {self.emu.uc.mem_read(0x1AB4758C4,4)} {self.emu.uc.mem_read(0xFFFFFC025,4)} {self.emu.uc.mem_read(0x1D610141C,4)}")
 
         # print(f"resolve_modules resolve_modules")
-        # self.emu.add_hook(0x193E2E7A8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E351B8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E7DC, self.hook_mem_read_unmapped_193E2E7DC)
-        # self.emu.add_hook(0x193E2E824, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AC1018, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AC1054, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ABCE10, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB49A288, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ABCD2C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ABCE90, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ABCEA4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1890FAE28, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ACCC08, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6ACCC80, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193F19EBC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193F19EE8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193EDAF9C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1890FAE24, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1890603A4, self.hook_mem_read_unmapped)
-
-
-        # self.emu.add_hook(0x1800CA8A0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800CA8B4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800CA8F8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800CA880, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E3F5E8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800CA518, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800D7544, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800CA5A8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800D7560, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800C7AA0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800C7B08, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800C7AC0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1800D4BE8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E352F0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E78C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E3524C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E35268, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E35294, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E83C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E84C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2D534, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E7D8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E7F4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E7DC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E35194, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E22028, self.hook_mem_read_unmapped_2)
-        # self.emu.add_hook(0x193E21FEC, self.hook_mem_read_unmapped_1)
-        # self.emu.add_hook(0x193E265A8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E265A4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E26570, self.hook_mem_read_unmapped_3)
-        # self.emu.add_hook(0x193E26508, self.hook_mem_read_unmapped_4)
-        # self.emu.add_hook(0x193E20704, self.hook_mem_read_unmapped_5)
-        # self.emu.add_hook(0x193E20714, self.hook_mem_read_unmapped_4)
-        # self.emu.add_hook(0x193E21B98, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E21B80, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803EE988, self.hook_mem_read_unmapped_6)
-        # self.emu.add_hook(0x193E37C64, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37C78, self.hook_mem_read_unmapped_7)
-        # self.emu.add_hook(0x193E37C40, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37C60, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37CC4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37CCC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37DC4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37DCC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37E58, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37E60, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37E8C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37F40, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37F88, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37F10, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37FA4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37FB0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37FC0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38020, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37E80, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E37DBC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38034, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38060, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E380A0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E380F8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38168, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38120, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E38130, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E296D0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E296EC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E29708, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2974C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BE34, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BD74, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BDD8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BE1C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BD88, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E1BD84, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193e28998, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2899C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E289A4, self.hook_mem_read_unmapped)
-  
-        # self.emu.add_hook(0x193E28A2C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28A40, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E289DC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28A1C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28B18, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28A24, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28A54, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E28AFC, self.hook_mem_read_unmapped)
-
-        # self.emu.add_hook(0x193E2739C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2E804, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E20708, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB498898, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988B0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988B8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988D4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988E0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C40636C0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C40636B8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988AC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988D0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988E0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27144, self.hook_mem_read_unmapped)
-
-        # self.emu.add_hook(0x193E2717C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27154, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27164, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E271A0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E271C4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E272A4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AE592C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988A0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988A4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4988AC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF8398, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB47D7C0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB47D788, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB47D660, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB47D75C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA1A0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA1D0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA1E4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA204, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA220, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803DA2D8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803F0E50, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803F0E70, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1803F1084, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725ED0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725EDC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725EE8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725EF4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F00, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F0C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F18, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F10, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F2C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F38, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F44, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F50, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F5C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181725F68, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x181824D20, self.hook_mem_read_unmapped)
-
-        # self.emu.add_hook(0x1C6AF8384, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF8398, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF83A4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF83B0, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF83BC, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF83C8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1C6AF83D4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB48EDF8, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB48EEB8, self.hook_mem_read_unmapped)
-
-        # self.emu.add_hook(0x193E27140, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2715C, self.hook_mem_read_unmapped)
-       
-        # self.emu.add_hook(0x193E2714C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27158, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27164, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27170, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E2717C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27188, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x193E27194, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB47377C, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB473784, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB473788, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4737B4, self.hook_mem_read_unmapped)
-        # self.emu.add_hook(0x1AB4737B8, self.hook_mem_read_unmapped)
         
         # self.emu.add_hook(0x193E27EAC, self.hook_mem_read_unmapped) #_load_images start
         # self.emu.add_hook(0x193E28520, self.hook_mem_read_unmapped) #_load_images end 1
@@ -909,8 +1182,8 @@ class IosOs(BaseOs):
         # self.emu.add_hook(0x18046FFC8, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 40
         # self.emu.add_hook(0x180470004, self.hook_mem_read_unmapped) #_load_images  ____forwarding___ 41
         # self.emu.add_hook(0x180470014, self.hook_mem_read_unmapped_180470014) #_load_images  ____forwarding___ 42
-       
 
+        modules = []
         for module_name in module_names:
             if self.emu.find_module(module_name):
                 continue
@@ -920,19 +1193,182 @@ class IosOs(BaseOs):
                 module_file=module_file,
                 exec_objc_init=False,
             )
+            modules.append(module)
+            # if module_name == "libdispatch.dylib":
+            #     self.emu.add_hook(0x193E1A460, self.hook_mem_read_unmapped)
+            if module_name == "libsystem_platform.dylib":
+                print(f"Loading libsystem_platform.dylib - MMIO region already initialized")
+                
+                # 验证MMIO区域初始化
+                # self.debug_mmio_region()
+
+                # self.emu.add_hook(0x18038A1A0, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18038A180, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18038A114, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18038A65C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18EE8E99C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18044C788, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18044C768, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18044C8CC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18044C894, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x189118C24, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x189118C64, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x189118CBC, self.hook_mem_read_unmapped)
+
+                # self.emu.add_hook(0x1AB48EEBC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1AB48EDF8, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1800A627C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1800A6280, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18007F0B8, self.hook_mem_read_unmapped_callStack)
+                # self.emu.add_hook(0x1803DA0D0, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803DA0D4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180077CD4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x181760BD0, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1800A6288, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180077D10, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803D9F98, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803D9FC8, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803D9FDC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1AB49A8E4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1AB4994D4, self.hook_mem_read_unmapped_1AB4994D4)
+                # self.emu.add_hook(0x1803F0E50, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803F0E54, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1803F0E58, self.hook_mem_read_unmapped)
+                
+                # self.emu.add_hook(0x1803F0EAC, self.hook_mem_read_unmapped)
+                
+                # self.emu.add_hook(0x181725E3C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x181725E40, self.hook_mem_read_unmapped)
+
+                # self.emu.add_hook(0x18040C094, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18040C0EC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18040C0C4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18040C0D0, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1804275F0, self.hook_mem_read_unmapped)
+
+                # self.emu.add_hook(0x18042762C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427640, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427644, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427654, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427658, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1804276B0, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1804276E8, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427740, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x180427950, self.hook_mem_read_unmapped) 
+                # self.emu.add_hook(0x180427934, self.hook_mem_read_unmapped)
+
+                # self.emu.add_hook(0x1C6ABB7F0, self.hook_mem_read_unmapped_1C6ABB7F0)
+                # self.emu.add_hook(0x1817209EC, self.hook_mem_read_unmapped_1817209EC)
+                # self.emu.add_hook(0x1817209B0, self.hook_mem_read_unmapped_1817209B0)
+                # self.emu.add_hook(0x1C6ABB7C4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1C6ABB7C8, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1817209D4, self.hook_mem_read_unmapped_1817209D4)
+                # self.emu.add_hook(0x1C6ABB86C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18004B850, self.hook_mem_read_unmapped_18004B850)
+                # self.emu.add_hook(0x18171D408, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18171C908, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18171D1DC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18171D3C4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18004C650, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x18007FE10, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1800A6480, self.hook_mem_read_unmapped_1800A6480)
+                # self.emu.add_hook(0x1C6ABB9E0, self.hook_mem_read_unmapped_1C6ABB9E0)
+                # self.emu.add_hook(0x1C6ABB7D0, self.hook_mem_read_unmapped_1C6ABB7D0)
+
+                # objc.A.dylib sendmsg
+                # self.emu.add_hook(0x193E1A49C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E1A4F8, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E1A494, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E1A540, self.hook_mem_read_unmapped)
+                
+                # self.emu.add_hook(0x188FBA178, self.hook_mem_read_unmapped)
+                
+                # self.emu.add_hook(0x100D01D20, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x100009274, self.hook_mem_read_unmapped_100009274)
+                # self.emu.add_hook(0x100008194, self.hook_mem_read_unmapped_100008194)
+                # self.emu.add_hook(0x100008148, self.hook_mem_read_unmapped_100008148)
+
+                # self.emu.add_hook(0x10276A708, self.hook_mem_read_unmapped_10276A708)   
+                # self.emu.add_hook(0x100D01B08, self.hook_mem_to_print_log_backtrace)
+
+                # self.emu.add_hook(0x1C6A4D8B0, self.hook_mem_to_print_all_reg)
+                # self.emu.add_hook(0x1C6A4D8B4, self.hook_mem_to_print_all_reg)
+
+                # self.emu.add_hook(0x100036330, self.hook_mem_to_print_all_reg)
+                # self.emu.add_hook(0x100036340, self.hook_mem_to_print_all_reg)
+                # self.emu.add_hook(0x10003655C, self.hook_mem_to_print_all_reg)
+
+                # self.emu.add_hook(0x193E23D8C, self.hook_mem_to_print_all_reg)
+                
+
+                # self.emu.add_hook(0x193E37054, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1C6AD18BC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x1C6AD1894, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37060, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E3706C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37068, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37070, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E3707C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37080, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E370A4, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E370AC, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37074, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37118, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37114, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37174, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E3762C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E3717C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37200, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37124, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37148, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E3714C, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37150, self.hook_mem_read_unmapped)
+                # self.emu.add_hook(0x193E37154, self.hook_mem_read_unmapped)
+               
+            # self._init_bss_section(module)
             # print(f"resolve_modules 2 {self.emu.uc.mem_read(0x1AB4758C4,4)} {self.emu.uc.mem_read(0xFFFFFC025,4)} {self.emu.uc.mem_read(0x1D610141C,4)}")
             # Fixup must be executed before initializing Objective-C.
-            fixup.install(module)
-
+            # fixup.install(module)
+            
+        for module_name in module_names:
             self._after_module_loaded(module_name)
+            
+        for module in modules:
 
-            self.init_objc(module)
+            self.init_objc(module) #Foundation之后hook失败
 
             module.binary = None
 
+        
+        
+
+    def _init_bss_section(self, module: Module):
+        """Initialize BSS segment for the module."""
+        if not module.binary:
+            print(f"_init_bss_section: module.binary is None for {module.name}")
+            return
+
+        print(f"_init_bss_section: processing module {module.name}")
+        print(f"_init_bss_section: available segments: {[seg.name for seg in module.binary.segments]}")
+        
+        # 查找__bss段
+        bss_section = None
+        for segment in module.binary.segments:
+            if segment.name in ["__DATA", "__DATA_DIRTY"]:
+                for section in segment.sections:
+                    if section.name == "__bss":
+                        bss_section = section
+                        if bss_section:
+                            print(f"_init_bss_section: found __bss segment - virtual_address: 0x{bss_section.virtual_address:x}, size: {bss_section.size}")
+                            self.emu.write_zeros(bss_section.virtual_address, bss_section.size)
+
+        if module.name == "UIKitCore":
+            print(f"UIKitCore 0x1D616ED08:{self.emu.uc.mem_read(0x1D616ED08,8)}")
+            
     def _after_module_loaded(self, module_name: str):
         print(f"_after_module_loaded module_name: {module_name}")
         """Perform initialization after module loaded."""
+        print(f"0x1D6101370:0x{int.from_bytes(self.emu.uc.mem_read(0x1D6101370, 8), byteorder=self.emu.endian):x}")
         if module_name == "libsystem_kernel.dylib":
             self._init_lib_system_kernel()
         elif module_name == "libsystem_c.dylib":
@@ -959,9 +1395,10 @@ class IosOs(BaseOs):
         # Call initialize function of `Foundation`
         self.emu.call_symbol("__NSInitializePlatform")
 
-        self.fix_method_signature_rom_table()
+        # self.fix_method_signature_rom_table()
 
         amkrtemp_sentinel = self.emu.find_symbol("__amkrtemp.sentinel")
+        # print(f"amkrtemp_sentinel {amkrtemp_sentinel}")
         self.emu.write_pointer(amkrtemp_sentinel.address, self.emu.create_string(""))
 
     def _enable_ui_kit(self):
@@ -1057,13 +1494,18 @@ class IosOs(BaseOs):
             table_data = pickle.load(f)
 
         table = self.emu.find_symbol("_MethodSignatureROMTable")
+        print(f"table {table}")
 
         for index, item in enumerate(table_data):
             offset = table.address + index * 24
             str_ptr = self.emu.create_string(item[1])
 
+            # print(f"offset 0x{offset + 8:x} {str_ptr} {item[2]}")
             self.emu.write_pointer(offset + 8, str_ptr)
             self.emu.write_u64(offset + 16, item[2])
+        for i in range(0, 100):
+            print(f"table.address 0x{table.address + i * 8:x}:0x{self.emu.read_u64(table.address + i * 8):x}")
+        
 
     def _create_fp(self, fd: int, mode: str, unbuffered: bool = False) -> int:
         """Wrap file descriptor to file object by calling `fdopen`."""
@@ -1111,10 +1553,15 @@ class IosOs(BaseOs):
         ALL_MODULES = OBJC_DEPENDENCIES + UI_KIT_DEPENDENCIES + ONLY_MAP
         self.map_all_modules(ALL_MODULES)
 
+        print(f"self._dyld_image_info {self._dyld_image_info}")
         # symbol_dataSegmentsRanges = self.emu.find_symbol("_dataSegmentsRanges")
         # print(f"symbol_dataSegmentsRanges {symbol_dataSegmentsRanges}")
         self.emu.write_u64(0x1D6103F38, 0x180000000)
         self.emu.write_u64(0x1D6103F38 + 8, 0x1E7BA4000)
+        self.emu.write_u64(0x1D61759D0, 0x18905E1D4)
+        #__int64 __fastcall cache_t::eraseNolock(cache_t *__hidden this, const char *)
+        # 直接return,该函数会调用task_threads，导致BRK
+        self.emu.write_u64(0x193E1CB88, 0xD65F03C0) # ret
 
         if self.emu.enable_objc:
             self._enable_objc()

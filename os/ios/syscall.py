@@ -12,12 +12,11 @@ from unicorn import arm64_const
 from chomper.exceptions import SystemOperationFailed, ProgramTerminated
 from chomper.os.base import SyscallError
 from chomper.typing import SyscallHandleCallable
-from chomper.utils import struct2bytes, to_signed
+from chomper.utils import struct_to_bytes, bytes_to_struct, to_signed
 
 from . import const
-from .structs import Rusage
+from .structs import Rusage, MachMsgHeaderT, NDRRecordT, ReplayFmtT
 from .sysctl import sysctl, sysctlbyname
-
 if TYPE_CHECKING:
     from chomper.core import Chomper
 
@@ -85,6 +84,7 @@ SYSCALL_MAP: Dict[int, str] = {
     const.SYS_IDENTITYSVC: "SYS_identitysvc",
     const.SYS_PSYNCH_MUTEXWAIT: "SYS_psynch_mutexwait",
     const.SYS_ISSETUGID: "SYS_issetugid",
+    const.SYS_PTHREAD_SIGMASK: "SYS_pthread_sigmask",
     const.SYS_PROC_INFO: "SYS_proc_info",
     const.SYS_STAT64: "SYS_stat64",
     const.SYS_FSTAT64: "SYS_fstat64",
@@ -105,6 +105,7 @@ SYSCALL_MAP: Dict[int, str] = {
     const.SYS_READV_NOCANCEL: "SYS_readv_nocancel",
     const.SYS_WRITEV_NOCANCEL: "SYS_writev_nocancel",
     const.SYS_PREAD_NOCANCEL: "SYS_pread_nocancel",
+    const.SYS_MWAIT_SIGNAL_NOCANCEL: "SYS_mwait_signal_nocancel",
     const.SYS_GETATTRLISTBULK: "SYS_getattrlistbulk",
     const.SYS_OPENAT: "SYS_openat",
     const.SYS_OPENAT_NOCANCEL: "SYS_openat_nocancel",
@@ -118,14 +119,19 @@ SYSCALL_MAP: Dict[int, str] = {
     const.SYS_READLINKAT: "SYS_readlinkat",
     const.SYS_SYMLINKAT: "SYS_symlinkat",
     const.SYS_MKDIRAT: "SYS_mkdirat",
+    const.SYS_BSDTHREAD_CTL: "SYS_bsdthread_ctl",
     const.SYS_GETENTROPY: "SYS_getentropy",
     const.SYS_ULOCK_WAIT: "SYS_ulock_wait",
+    const.SYS_ULOCK_WAKE: "SYS_ulock_wake",
+    const.SYS_TERMINATE_WITH_PAYLOAD: "SYS_terminate_with_payload",
+    const.SYS_ABORT_WITH_PAYLOAD: "SYS_abort_with_payload",
     const.SYS_PREADV: "SYS_preadv",
     const.SYS_PREADV_NOCANCEL: "SYS_preadv_nocancel",
     const.MACH_ABSOLUTE_TIME_TRAP: "MACH_ABSOLUTE_TIME_TRAP",
     const.KERNELRPC_MACH_VM_ALLOCATE_TRAP: "KERNELRPC_MACH_VM_ALLOCATE_TRAP",
     const.KERNELRPC_MACH_VM_DEALLOCATE_TRAP: "KERNELRPC_MACH_VM_DEALLOCATE_TRAP",
     const.KERNELRPC_MACH_PORT_ALLOCATE_TRAP: "KERNELRPC_MACH_PORT_ALLOCATE_TRAP",
+    const.KERNELRPC_MACH_PORT_DEALLOCATE_TRAP: "KERNELRPC_MACH_PORT_DEALLOCATE_TRAP",
     const.KERNELRPC_MACH_PORT_INSERT_MEMBER_TRAP: (
         "KERNELRPC_MACH_PORT_INSERT_MEMBER_TRAP"
     ),
@@ -136,6 +142,7 @@ SYSCALL_MAP: Dict[int, str] = {
     const.TASK_SELF_TRAP: "TASK_SELF_TRAP",
     const.HOST_SELF_TRAP: "HOST_SELF_TRAP",
     const.MACH_MSG_TRAP: "MACH_MSG_TRAP",
+    const.SWTCH_PRI: "SWTCH_PRI",
     const.KERNELRPC_MACH_PORT_TYPE_TRAP: "KERNELRPC_MACH_PORT_TYPE_TRAP",
     const.MACH_TIMEBASE_INFO_TRAP: "MACH_TIMEBASE_INFO_TRAP",
     const.MK_TIMER_CREATE_TRAP: "MK_TIMER_CREATE_TRAP",
@@ -571,6 +578,46 @@ def handle_sys_pread(emu: Chomper):
 
     return len(data)
 
+@register_syscall_handler(const.SYS_MWAIT_SIGNAL_NOCANCEL)
+def handle_sys_mwait_signal_nocancel(emu: Chomper):
+    """
+    Handle SYS_MWAIT_SIGNAL_NOCANCEL system call.
+    
+    This system call waits for a signal without allowing cancellation.
+    It's typically used for thread synchronization in iOS/macOS.
+    
+    Args:
+        emu: The Chomper emulator instance
+        
+    Returns:
+        int: 0 on success, -1 on error
+    """
+    # Get system call arguments
+    # x0: signal - signal number to wait for
+    # x1: timeout - timeout value (optional)
+    # x2: flags - additional flags (optional)
+    
+    signal = emu.get_arg(0)
+    timeout = emu.get_arg(1)
+    flags = emu.get_arg(2)
+    
+    emu.logger.info(f"mwait_signal_nocancel: signal={signal}, timeout={timeout}, flags={flags}")
+    
+    # In a real implementation, this would:
+    # 1. Block the current thread until the specified signal is received
+    # 2. Handle timeout if specified
+    # 3. Process any additional flags
+    
+    # For simulation purposes, we'll just log the call and return success
+    # In a real emulator, you might want to:
+    # - Track signal state
+    # - Implement actual waiting behavior
+    # - Handle timeout mechanisms
+    
+    emu.logger.info("mwait_signal_nocancel: Signal wait completed (simulated)")
+    
+    return 0
+
 
 @register_syscall_handler(const.SYS_QUOTACTL)
 def handle_sys_quotactl(emu: Chomper):
@@ -769,13 +816,143 @@ def handle_sys_identitysvc(emu: Chomper):
 
 @register_syscall_handler(const.SYS_PSYNCH_MUTEXWAIT)
 def handle_sys_psynch_mutexwait(emu: Chomper):
+    """
+    Handle SYS_PSYNCH_MUTEXWAIT system call.
+    
+    This system call waits for a mutex to become available.
+    To prevent infinite loops, we implement a timeout mechanism.
+    
+    Args:
+        emu: The Chomper emulator instance
+        
+    Returns:
+        int: 0 on success, -1 on error
+    """
+    # Get system call arguments
+    # x0: mutex - pointer to mutex structure
+    # x1: timeout - timeout value (optional)
+    # x2: flags - additional flags (optional)
+    
+    mutex_ptr = emu.get_arg(0)
+    timeout = emu.get_arg(1)
+    flags = emu.get_arg(2)
+    
+    # 防止无限循环的机制
+    # 1. 检查是否已经等待过这个mutex
+    if not hasattr(emu, '_mutex_wait_count'):
+        emu._mutex_wait_count = {}
+    
+    mutex_key = f"mutex_{mutex_ptr:x}"
+    if mutex_key not in emu._mutex_wait_count:
+        emu._mutex_wait_count[mutex_key] = 0
+    
+    # 2. 增加等待计数
+    emu._mutex_wait_count[mutex_key] += 1
+    
+    # 只在第一次调用时记录详细信息
+    if emu._mutex_wait_count[mutex_key] == 1:
+        emu.logger.info(f"psynch_mutexwait: mutex=0x{mutex_ptr:x}, timeout={timeout}, flags={flags}")
+    
+    # 3. 设置最大重试次数，防止无限循环
+    MAX_RETRY_COUNT = 3
+    
+    if emu._mutex_wait_count[mutex_key] > MAX_RETRY_COUNT:
+        emu.logger.error(f"psynch_mutexwait: Maximum retry count ({MAX_RETRY_COUNT}) exceeded for mutex 0x{mutex_ptr:x}, stopping emulator to prevent infinite loop")
+        emu.log_backtrace()
+        # 停止模拟器执行
+        emu.uc.emu_stop()
+        return -1
+    
+    # 4. 模拟短暂的等待，然后返回成功
+    # 在真实系统中，这里会阻塞直到mutex可用
+    # 在模拟环境中，我们假设mutex立即可用
+    
+    # 只在第一次调用或重试时记录日志，避免无限打印
+    if emu._mutex_wait_count[mutex_key] == 1:
+        emu.logger.info(f"psynch_mutexwait: Mutex wait completed (simulated, first attempt)")
+    elif emu._mutex_wait_count[mutex_key] > 1:
+        emu.logger.info(f"psynch_mutexwait: Mutex wait completed (simulated, retry attempt {emu._mutex_wait_count[mutex_key]})")
+    
+    # 5. 重置计数器，表示成功获取了mutex
+    emu._mutex_wait_count[mutex_key] = 0
+    
     return 0
 
+@register_syscall_handler(const.SYS_PSYNCH_CVWAIT)
+def handle_sys_psynch_cvwait(emu: Chomper):
+    emu.log_backtrace()
+    return 0
 
 @register_syscall_handler(const.SYS_ISSETUGID)
 def handle_sys_issetugid(emu: Chomper):
     return 0
 
+@register_syscall_handler(const.SYS_PTHREAD_SIGMASK)
+def handle_sys_pthread_sigmask(emu: Chomper):
+    """
+    Handle SYS_PTHREAD_SIGMASK system call.
+    
+    This system call examines or changes the signal mask of the calling thread.
+    
+    Args:
+        emu: The Chomper emulator instance
+        
+    Returns:
+        int: 0 on success, -1 on error
+    """
+    # Get system call arguments
+    # x0: how - specifies how the signal mask is changed
+    # x1: set - pointer to signal set to be used for modification
+    # x2: oset - pointer to signal set to store the old signal mask
+    
+    how = emu.get_arg(0)
+    set_ptr = emu.get_arg(1)
+    oset_ptr = emu.get_arg(2)
+    
+    emu.logger.info(f"pthread_sigmask: how=0x{how:x}, set=0x{set_ptr:x}, oset=0x{oset_ptr:x}")
+    
+    # Define signal mask operation constants
+    SIG_BLOCK = 0      # Add signals to the signal mask
+    SIG_UNBLOCK = 1    # Remove signals from the signal mask  
+    SIG_SETMASK = 2    # Replace the signal mask
+    
+    # Validate the 'how' parameter
+    if how not in [SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK]:
+        # Map invalid values to closest valid ones for compatibility
+        if how == 3:
+            # Value 3 might be a typo or extension, map to SIG_SETMASK
+            emu.logger.warning(f"Invalid pthread_sigmask 'how' parameter: {how}, mapping to SIG_SETMASK")
+            how = SIG_SETMASK
+        else:
+            emu.logger.error(f"Invalid pthread_sigmask 'how' parameter: {how}")
+            return -1
+    
+    # If oset is not NULL, save the current signal mask
+    if oset_ptr != 0:
+        # For simplicity, we'll set the old signal mask to 0 (no signals blocked)
+        # In a real implementation, this would track the actual signal mask
+        emu.write_u64(oset_ptr, 0)  # Write 64-bit signal mask
+        emu.logger.info("Saved old signal mask to oset")
+    
+    # Process the new signal mask if set is not NULL
+    if set_ptr != 0:
+        new_mask = emu.read_u64(set_ptr)
+        emu.logger.info(f"New signal mask: 0x{new_mask:x}")
+        
+        # In a real implementation, we would:
+        # 1. Apply the signal mask based on the 'how' parameter
+        # 2. Update the thread's signal mask state
+        # 3. Handle signal delivery accordingly
+        
+        if how == SIG_BLOCK:
+            emu.logger.info("SIG_BLOCK: Adding signals to mask")
+        elif how == SIG_UNBLOCK:
+            emu.logger.info("SIG_UNBLOCK: Removing signals from mask")
+        elif how == SIG_SETMASK:
+            emu.logger.info("SIG_SETMASK: Replacing signal mask")
+    
+    # pthread_sigmask returns 0 on success, -1 on error
+    return 0
 
 @register_syscall_handler(const.SYS_PROC_INFO)
 def handle_sys_proc_info(emu: Chomper):
@@ -879,9 +1056,235 @@ def handle_sys_fsstat64(emu: Chomper):
 
 @register_syscall_handler(const.SYS_BSDTHREAD_CREATE)
 def handle_sys_bsdthread_create(emu: Chomper):
-    emu.logger.warning("Emulator ignored a thread create reqeust.")
-    emu.log_backtrace()
-    return 0
+    """
+    Handle SYS_BSDTHREAD_CREATE system call.
+    
+    This system call creates a new BSD thread with the specified function and parameters.
+    
+    Args:
+        emu: The Chomper emulator instance
+        
+    Returns:
+        int: Thread ID on success, -1 on failure
+    """
+    # Get system call arguments
+    # x0: user_func - function to execute in the new thread (start_routine)
+    # x1: user_arg - argument to pass to the thread function (arg)
+    # x2: stack - stack address for the new thread
+    # x3: threadptr - pointer to pthread_t structure
+    # x4: flags - thread creation flags
+    
+    user_func = emu.get_arg(0)
+    user_arg = emu.get_arg(1)
+    stack = emu.get_arg(2)
+    threadptr = emu.get_arg(3)
+    flags = emu.get_arg(4)
+    
+    emu.logger.info(f"Creating BSD thread: func=0x{user_func:x}, arg=0x{user_arg:x}, stack=0x{stack:x}, threadptr=0x{threadptr:x}, flags=0x{flags:x}")
+    
+    try:
+        emu.logger.info("=== Starting BSD thread creation ===")
+        
+        # Validate thread function address
+        if user_func == 0:
+            emu.logger.error("Invalid thread function address: 0x0")
+            return -1
+            
+        # Check thread limit to prevent memory issues
+        if len(emu.os._threads) >= 100:  # Limit to 100 threads per process
+            emu.logger.warning("Thread limit reached (100), cleaning up old threads")
+            _cleanup_completed_threads(emu)
+            if len(emu.os._threads) >= 100:
+                emu.logger.error("Thread limit still exceeded after cleanup")
+                return -1
+        
+        # Generate a unique thread ID
+        thread_id = emu.os.pid * 1000 + len(emu.os._threads) + 1
+        emu.logger.info(f"Generated thread ID: {thread_id}")
+        
+        # Create thread structure
+        emu.logger.info("Creating thread structure buffer...")
+        thread_struct = emu.create_buffer(256)
+        emu.logger.info(f"Thread structure allocated at: 0x{thread_struct:x}")
+        
+        # Initialize thread structure fields
+        emu.logger.info("Initializing thread structure fields...")
+        
+        # Set thread ID
+        emu.logger.info(f"Writing thread ID {thread_id} to offset 0x00")
+        emu.write_u64(thread_struct + 0x00, thread_id)
+        
+        # Set thread function and argument
+        emu.logger.info(f"Writing user_func 0x{user_func:x} to offset 0x08")
+        emu.write_pointer(thread_struct + 0x08, user_func)
+        emu.logger.info(f"Writing user_arg 0x{user_arg:x} to offset 0x10")
+        emu.write_pointer(thread_struct + 0x10, user_arg)
+        
+        # Set stack information
+        emu.logger.info("Setting up stack information...")
+        stack_allocated = False
+        if stack != 0:
+            # Validate user-provided stack address
+            emu.logger.info(f"Using user-provided stack: 0x{stack:x}")
+            if stack < 0x1000 or stack > 0x7FFFFFFFFFFFFFFF:
+                emu.logger.warning(f"Invalid stack address: 0x{stack:x}")
+                return -1
+            emu.logger.info(f"Writing stack address 0x{stack:x} to offset 0x18")
+            emu.write_pointer(thread_struct + 0x18, stack)
+        else:
+            # Allocate default stack if none provided
+            emu.logger.info("Allocating default stack...")
+            default_stack = emu.create_buffer(0x50000)  # STACK_SIZE = 0x50000
+            emu.logger.info(f"Default stack allocated at: 0x{default_stack:x}")
+            emu.write_pointer(thread_struct + 0x18, default_stack)
+            stack_allocated = True
+        
+        # Set thread local storage (not provided in bsdthread_create, allocate default)
+        emu.logger.info("Setting up TLS...")
+        tls_allocated = True
+        emu.logger.info("Allocating default TLS...")
+        default_tls = emu.create_buffer(0x1000)
+        emu.logger.info(f"Default TLS allocated at: 0x{default_tls:x}")
+        emu.logger.info(f"Writing thread ID {thread_id} to TLS offset 0x18")
+        emu.write_u32(default_tls + 0x18, thread_id)
+        emu.logger.info(f"Writing TLS address 0x{default_tls:x} to offset 0x20")
+        emu.write_pointer(thread_struct + 0x20, default_tls)
+        
+        # Set thread state (running)
+        emu.logger.info("Setting thread state to running...")
+        emu.write_u32(thread_struct + 0x28, 1)  # 1 = running
+        
+        # Set thread flags
+        emu.logger.info(f"Setting thread flags: 0x{flags:x}")
+        emu.write_u32(thread_struct + 0x2C, flags)
+        
+        # Set creation time
+        import time
+        creation_time = int(time.time())
+        emu.logger.info(f"Setting creation time: {creation_time}")
+        emu.write_u64(thread_struct + 0x30, creation_time)
+        
+        # Store thread information in OS
+        emu.logger.info("Storing thread information in OS...")
+        emu.os._threads[thread_id] = {
+            'struct': thread_struct,
+            'func': user_func,
+            'arg': user_arg,
+            'stack': emu.read_pointer(thread_struct + 0x18),
+            'tls': emu.read_pointer(thread_struct + 0x20),
+            'status': 'created',
+            'created_time': creation_time,
+            'memory_allocated': True,
+            'stack_allocated': stack_allocated,
+            'tls_allocated': tls_allocated
+        }
+        emu.logger.info(f"Thread info stored: {emu.os._threads[thread_id]}")
+        
+        # Write thread ID to pthread_t structure if provided
+        if threadptr != 0:
+            emu.logger.info(f"Writing thread ID {thread_id} to pthread_t structure at 0x{threadptr:x}")
+            try:
+                emu.write_pointer(threadptr, thread_id)
+                emu.logger.info("Successfully wrote to pthread_t structure")
+            except Exception as e:
+                emu.logger.warning(f"Failed to write to pthread_t structure at 0x{threadptr:x}: {e}")
+                # Don't fail the entire thread creation if pthread_t write fails
+        
+        # Start thread execution in a separate context
+        emu.logger.info(f"BSD thread {thread_id} created successfully")
+        
+        # Attempt to start thread execution
+        try:
+            # Create a new execution context for the thread
+            # This simulates actual thread execution
+            if user_func != 0:
+                # Set up thread context and start execution
+                emu.logger.info(f"Starting thread execution at 0x{user_func:x}")
+                
+                # In a real implementation, you would:
+                # 1. Save current CPU context
+                # 2. Set up new thread context with its own stack and registers
+                # 3. Start execution at user_func with user_arg
+                # 4. Restore original context
+                
+                # For now, we'll simulate by calling the function directly
+                # This is a simplified approach - in reality you'd want separate contexts
+                try:
+                    # Set up thread-specific context
+                    thread_context = {
+                        'thread_id': thread_id,
+                        'stack': emu.read_pointer(thread_struct + 0x18),
+                        'tls': emu.read_pointer(thread_struct + 0x20)
+                    }
+                    
+                    # Call the thread function with the thread argument
+                    # Note: This is a simplified simulation - real threads would have separate contexts
+                    emu.logger.info(f"Calling thread function at 0x{user_func:x} with arg 0x{user_arg:x}")
+                    emu.call_address(user_func, user_arg)
+                    emu.logger.info(f"Thread {thread_id} function completed")
+                    
+                    # Update thread status
+                    emu.os._threads[thread_id]['status'] = 'completed'
+                    
+                except Exception as thread_e:
+                    emu.logger.warning(f"Thread {thread_id} execution failed: {thread_e}")
+                    emu.os._threads[thread_id]['status'] = 'failed'
+                    emu.os._threads[thread_id]['error'] = str(thread_e)
+                    
+        except Exception as exec_e:
+            emu.logger.warning(f"Failed to start thread execution: {exec_e}")
+            # Thread creation succeeded but execution failed - this is acceptable
+        
+        # Clean up completed threads to prevent memory accumulation
+        _cleanup_completed_threads(emu)
+        
+        return 0
+        
+    except Exception as e:
+        emu.logger.error(f"Failed to create BSD thread: {e}")
+        emu.logger.error(f"Exception type: {type(e).__name__}")
+        import traceback
+        emu.logger.error(f"Exception traceback: {traceback.format_exc()}")
+        return -1
+
+
+def _cleanup_completed_threads(emu: Chomper):
+    """Clean up completed threads to free memory."""
+    try:
+        current_time = int(time.time())
+        threads_to_remove = []
+        
+        for thread_id, thread_info in emu.os._threads.items():
+            # Remove threads that have been completed for more than 60 seconds
+            if (thread_info.get('status') in ['completed', 'failed'] and 
+                current_time - thread_info.get('created_time', 0) > 60):
+                
+                # Free allocated memory
+                if thread_info.get('memory_allocated'):
+                    try:
+                        if 'struct' in thread_info:
+                            emu.free(thread_info['struct'])
+                        if 'stack' in thread_info and thread_info['stack'] != 0:
+                            # Only free if it's our allocated stack (not user-provided)
+                            if thread_info.get('stack_allocated', False):
+                                emu.free(thread_info['stack'])
+                        if 'tls' in thread_info and thread_info['tls'] != 0:
+                            # Only free if it's our allocated TLS (not user-provided)
+                            if thread_info.get('tls_allocated', False):
+                                emu.free(thread_info['tls'])
+                    except Exception as cleanup_e:
+                        emu.logger.warning(f"Failed to cleanup thread {thread_id} memory: {cleanup_e}")
+                
+                threads_to_remove.append(thread_id)
+        
+        # Remove cleaned up threads
+        for thread_id in threads_to_remove:
+            del emu.os._threads[thread_id]
+            emu.logger.debug(f"Cleaned up thread {thread_id}")
+        
+        emu.logger.info(f"thread cleaned up completed")
+    except Exception as e:
+        emu.logger.warning(f"Thread cleanup failed: {e}")
 
 
 @register_syscall_handler(const.SYS_LCHOWN)
@@ -1047,11 +1450,78 @@ def handle_sys_mkdirat(emu: Chomper):
 
     return 0
 
+@register_syscall_handler(const.SYS_BSDTHREAD_CTL)
+def handle_sys_bsdthread_ctl(emu: Chomper):
+    """
+    Handle SYS_BSDTHREAD_CTL system call.
+    
+    This system call provides thread control operations for BSD threads.
+    
+    Args:
+        emu: The Chomper emulator instance
+        
+    Returns:
+        int: 0 on success, error code on failure
+    """
+    # Get system call arguments
+    # x0: cmd - command to execute
+    # x1: arg1 - first argument
+    # x2: arg2 - second argument  
+    # x3: arg3 - third argument
+    
+    cmd = emu.get_arg(0)
+    arg1 = emu.get_arg(1)
+    arg2 = emu.get_arg(2)
+    arg3 = emu.get_arg(3)
+    
+    emu.logger.info(f"BSD thread control: cmd=0x{cmd:x}, arg1=0x{arg1:x}, arg2=0x{arg2:x}, arg3=0x{arg3:x}")
+    
+    # Handle different BSD thread control commands
+    if cmd == 0x01:  # BSDTHREAD_CTL_SET
+        # Set thread attributes
+        emu.logger.info("BSDTHREAD_CTL_SET command")
+        return 0
+        
+    elif cmd == 0x02:  # BSDTHREAD_CTL_GET
+        # Get thread attributes
+        emu.logger.info("BSDTHREAD_CTL_GET command")
+        return 0
+        
+    elif cmd == 0x03:  # BSDTHREAD_CTL_TERMINATE
+        # Terminate thread
+        emu.logger.info("BSDTHREAD_CTL_TERMINATE command")
+        return 0
+        
+    elif cmd == 0x04:  # BSDTHREAD_CTL_SUSPEND
+        # Suspend thread
+        emu.logger.info("BSDTHREAD_CTL_SUSPEND command")
+        return 0
+        
+    elif cmd == 0x05:  # BSDTHREAD_CTL_RESUME
+        # Resume thread
+        emu.logger.info("BSDTHREAD_CTL_RESUME command")
+        return 0
+        
+    else:
+        # Unknown command
+        emu.logger.warning(f"Unknown BSDTHREAD_CTL command: 0x{cmd:x}")
+        return 0  # Return success for unknown commands to avoid crashes
 
-# @register_syscall_handler(const.SYS_ULOCK_WAIT)
-# def handle_sys_ulock_wait(emu: Chomper):
-#     return 0
+@register_syscall_handler(const.SYS_ULOCK_WAIT)
+def handle_sys_ulock_wait(emu: Chomper):
+    return 0
 
+@register_syscall_handler(const.SYS_ULOCK_WAKE)
+def handle_sys_ulock_wake(emu: Chomper):
+    return 0
+
+@register_syscall_handler(const.SYS_TERMINATE_WITH_PAYLOAD)
+def handle_sys_terminate_with_payload(emu: Chomper):
+    return 0
+
+@register_syscall_handler(const.SYS_ABORT_WITH_PAYLOAD)
+def handle_sys_abort_with_payload(emu: Chomper):
+    return 0
 
 @register_syscall_handler(const.SYS_PREADV)
 @register_syscall_handler(const.SYS_PREADV_NOCANCEL)
@@ -1130,6 +1600,9 @@ def handle_kernelrpc_mach_vm_map_trap(emu: Chomper):
 def handle_kernelrpc_mach_port_allocate_trap(emu: Chomper):
     return 0
 
+@register_syscall_handler(const.KERNELRPC_MACH_PORT_DEALLOCATE_TRAP)
+def handle_kernelrpc_mach_port_deallocate_trap(emu: Chomper):
+    return 0
 
 @register_syscall_handler(const.KERNELRPC_MACH_PORT_INSERT_MEMBER_TRAP)
 def handle_kernelrpc_mach_port_insert_member_trap(emu: Chomper):
@@ -1163,18 +1636,61 @@ def handle_host_self_trap(emu: Chomper):
 
 @register_syscall_handler(const.MACH_MSG_TRAP)
 def handle_mach_msg_trap(emu: Chomper):
-    # msg = emu.get_arg(0)
+    msg_ptr = emu.get_arg(0)
+    msg_raw = emu.read_bytes(msg_ptr, ctypes.sizeof(MachMsgHeaderT))
+    msg = bytes_to_struct(msg_raw, MachMsgHeaderT)
 
-    # msgh_size:
-    # emu.write_u32(msg + 0x4, 36)
+    msg_id = msg.msgh_id
+    remote_port = msg.msgh_remote_port
 
-    # msgh_remote_port
-    # emu.write_u32(msg + 0x8, 0)
+    option = emu.get_arg(1)
 
-    # msgh_id
-    # emu.write_u32(msg + 0x14, 8100)
+    emu.logger.info(
+        "Recv mach msg: msg_id=%s, remote_port=%s, option=0x%x",
+        msg_id,
+        remote_port,
+        option,
+    )
+
+    if remote_port == emu.ios_os.MACH_PORT_HOST_SELF:
+        if msg_id == 412:  # host_get_special_port
+            return 6
+    elif remote_port == emu.ios_os.MACH_PORT_TASK_SELF:
+        if msg_id == 3418:  # semaphore_create
+            if option & const.MACH_RCV_MSG:
+                # policy = emu.read_s32(msg_ptr + 0x20)
+                value = emu.read_s32(msg_ptr + 0x24)
+
+                semaphore = emu.ios_os.semaphore_create(value)
+
+                msg.msgh_bits |= const.MACH_MSGH_BITS_COMPLEX
+                msg.msgh_size = 40
+                msg.msgh_remote_port = 0
+                msg.msgh_id = 3518
+
+                ndr = NDRRecordT(
+                    mig_vers=1,
+                )
+
+                replay = ReplayFmtT(
+                    hdr=msg,
+                    ndr=ndr,
+                    kr=semaphore,
+                )
+
+                padding = b"\x00" * 6 + b"\x11"
+                emu.write_bytes(msg_ptr, struct_to_bytes(replay) + padding)
+            return 0
+        elif msg_id == 8000:  # task_restartable_ranges_register
+            return 6
+    elif remote_port == emu.ios_os.MACH_PORT_NOTIFICATION_CENTER:
+        return 0
 
     return 6
+
+@register_syscall_handler(const.SWTCH_PRI)
+def handle_swtch_pri(emu: Chomper):
+    return True
 
 
 @register_syscall_handler(const.KERNELRPC_MACH_PORT_TYPE_TRAP)

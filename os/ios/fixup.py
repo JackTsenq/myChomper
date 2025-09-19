@@ -37,6 +37,7 @@ class SystemModuleFixup:
         pointer += module_base
 
         self.emu.write_pointer(address, pointer)
+        print(f"relocate_pointer address: 0x{address:x} pointer: 0x{pointer:x}")
         self._relocate_cache[address] = pointer
 
         return pointer
@@ -173,6 +174,7 @@ class SystemModuleFixup:
 
     def fixup_method_list(self, module_base: int, address: int):
         """Fixup the method list struct."""
+        print(f"fixup_method_list module_base: 0x{module_base:0x} address: 0x{address:x}")
         method_list_ptr = self.relocate_pointer(module_base, address)
         if not method_list_ptr:
             return
@@ -183,7 +185,7 @@ class SystemModuleFixup:
         # Set isFixedUp of method_list_t is False
         flag = flag & (~0x3)
         self.emu.write_u32(method_list_ptr, flag)
-
+        print(f"method_list_ptr 0x{method_list_ptr:x} flag 0x{flag:x}")
         if flag < 0x80000000:
             for i in range(count):
                 method_ptr = method_list_ptr + 8 + i * 24
@@ -232,7 +234,7 @@ class SystemModuleFixup:
             self.relocate_pointer(module_base, protocol_address + 8)
 
     def fixup_class_struct(self, module_base: int, address: int):
-        # print(f"fixup_class_struct module_base: 0x{module_base:0x} address: 0x{address:x}")
+        print(f"fixup_class_struct module_base: 0x{module_base:0x} address: 0x{address:x}")
         if address == 0:
             return
         """Fixup the class struct."""
@@ -250,7 +252,7 @@ class SystemModuleFixup:
             self.add_refs_relocation(name_ptr)
 
         instance_methods_ptr = data_ptr + 32
-        # print(f"module_base 0x{module_base} instance_methods_ptr: 0x{instance_methods_ptr:x}")
+        print(f"module_base 0x{module_base} instance_methods_ptr: 0x{instance_methods_ptr:x}")
         self.fixup_method_list(module_base, instance_methods_ptr)
 
         protocols_ptr = data_ptr + 40

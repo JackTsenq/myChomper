@@ -125,6 +125,7 @@ class MachoLoader(BaseLoader):
         self,
         binary: lief.MachO.Binary,
         module_base: int,
+        app_framework: Optional[bool] = False,
     ) -> List[Symbol]:
         """Get all symbols in the module."""
         symbols = []
@@ -133,7 +134,7 @@ class MachoLoader(BaseLoader):
         lazy_binding_set = set()
 
         for symbol in binary.symbols:
-            if symbol.value and (symbol.value > 0x100000000):
+            if symbol.value and ((symbol.value > 0x100000000) or app_framework):
                 symbol_name = str(symbol.name)
                 symbol_address = module_base + symbol.value
 
@@ -162,6 +163,7 @@ class MachoLoader(BaseLoader):
                     address=symbol_address,
                     name=symbol_name,
                 )
+                
                 symbols.append(symbol_struct)
 
                 if binding_name != symbol_name:
@@ -315,6 +317,7 @@ class MachoLoader(BaseLoader):
         module_file: str,
         trace_symbol_calls: bool = False,
         map_mem: bool = False,
+        app_framework: Optional[bool] = False,
     ) -> Module:
         """Load Mach-O executable file from path."""
         module_name = os.path.basename(module_file)
@@ -332,7 +335,7 @@ class MachoLoader(BaseLoader):
             size = self._map_segments_mem(binary, module_base)
         else:
             size = self._map_segments(binary, module_base)
-        symbols = self._load_symbols(binary, module_base)
+        symbols = self._load_symbols(binary, module_base, app_framework)
 
         self.add_symbol_hooks(symbols, trace_symbol_calls)
 
